@@ -1,0 +1,53 @@
+---
+title: "OrchestOS: Contract-First Coding Task Runner for LLMs"
+sidebarTitle: "Home"
+description: "Run LLM-powered coding tasks in isolated sandboxes with declared file contracts, deterministic checks, and QA validation before any merge."
+---
+
+OrchestOS is a contract-first CLI that lets you delegate coding work to LLMs safely. Every task you define declares exactly which files the LLM may write, runs in an isolated git worktree, and must pass deterministic checks plus a QA LLM review before anything merges into your main branch. The result is verifiable, evidence-backed automation — not a black box.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Go from zero to your first completed task in five commands.
+  </Card>
+  <Card title="Tasks" icon="list-check" href="/concepts/tasks">
+    Learn how tasks.yaml works — contracts, checks, criteria, and dependencies.
+  </Card>
+  <Card title="Task Workflow" icon="arrow-progress" href="/guides/task-workflow">
+    Walk through the full lifecycle from init to merge.
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/reference/cli">
+    Every command, flag, and option in one place.
+  </Card>
+</CardGroup>
+
+## Get up and running in four steps
+
+<Steps>
+  <Step title="Install OrchestOS">
+    Install Bun, clone the repository, and run `bun install` to get the CLI ready on your machine.
+  </Step>
+  <Step title="Set your API key">
+    Add your `OPENROUTER_API_KEY` to `~/.orchestos/.env`. OpenRouter gives you access to Claude, GPT-4o, Gemini, DeepSeek, and more through a single key.
+  </Step>
+  <Step title="Initialize your project">
+    Run `orchestos init ./my-project` to detect your stack, save it to the SQLite evidence store, and index your code graph.
+  </Step>
+  <Step title="Run your first task">
+    Run `orchestos task init ./my-project`, edit `tasks.yaml` to describe what you want built, then run `orchestos task run ./my-project` to let the LLM do the work.
+  </Step>
+</Steps>
+
+## What makes OrchestOS different
+
+<CardGroup cols={3}>
+  <Card title="File Contracts" icon="file-contract" href="/concepts/contracts">
+    Each task declares an explicit `output[]` list — the only files the LLM may write. Anything outside that list is blocked, logged, and fails the run immediately.
+  </Card>
+  <Card title="Git Worktree Sandbox" icon="code-branch" href="/concepts/sandbox">
+    Every task runs in an isolated git worktree. On QA pass, changes merge via fast-forward. On failure, the worktree is discarded — no partial writes ever reach your main branch.
+  </Card>
+  <Card title="Deterministic QA" icon="shield-check" href="/concepts/tasks">
+    Shell-based checks (typecheck, tests) run before any QA LLM tokens are spent. A second LLM then evaluates each `acceptance_criteria` item line by line before marking a task done.
+  </Card>
+</CardGroup>

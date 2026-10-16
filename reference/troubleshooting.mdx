@@ -1,0 +1,342 @@
+---
+title: "OrchestOS Troubleshooting — Common Errors and Fixes"
+sidebarTitle: "Troubleshooting"
+description: "Actionable fixes for common OrchestOS problems — contract violations, stuck tasks, QA failures, API key errors, cost spikes, and embedding issues."
+---
+
+Most OrchestOS failures fall into a small number of patterns: the LLM tried to write a file outside the declared contract, QA criteria are too vague, the project wasn't initialized, or an API key is missing. The accordions below cover each issue with a concrete fix. For failures that don't appear here, run `orchestos runs --detail <run-id>` to inspect the full evidence record for a specific run.
+
+<Accordion title="Task fails with 'contract violation'">
+  **Symptom:** The task fails immediately after the LLM call and you see a message like `CONTRACT VIOLATION — task NOT applied`. The run record shows files in `files_blocked`.
+
+  **Cause:** The LLM tried to write to a file that is not listed in `output[]` for that task. OrchestOS enforces the output contract strictly — if any write is outside the declared list, the entire run is reverted and nothing is written.
+
+  **Fix:**
+
+  1. Run `orchestos runs --detail <run-id>` to see which files were attempted vs. authorized vs. blocked.
+  2. Add the blocked file path to `output[]` in `tasks.yaml` if the write was legitimate.
+  3. If the LLM is generating unexpected files, narrow the `description` to be more specific about what should be created.
+
+  ```yaml
+  # Before — too broad a description can cause the LLM to generate extra files
+  output:
+    - src/components/Button.tsx
+
+  # After — add any file the LLM legitimately needs to write
+  output:
+    - src/components/Button.tsx
+    - src/components/Button.module.css   # LLM was trying to write this too
+  ```
+
+  Keeping `output[]` narrow is intentional — it is the primary safety mechanism. Only expand it when you've confirmed the additional file is genuinely part of the task scope.
+</Accordion>
+
+<Accordion title="Task stuck in failed_permanent">
+  **Symptom:** `orchestos task status` shows a task with `failed_permanent` status. It won't be picked up by `orchestos task run`.
+
+  **Cause:** The task failed QA 3 times in a row. OrchestOS stops retrying to avoid burning tokens on a task that has a systemic problem.
+
+  **Fix:**
+
+  1. Run `orchestos task diagnose <task-id>` to see the automatically generated failure analysis. OrchestOS reads the last 3 run records and classifies the failure pattern.
+
+  ```bash
+  orchestos task diagnose my-task-id
+  ```
+
+  The diagnosis output categorizes the failure as one of: `deterministic_check` (compilation/test errors), `qa_specific_criterion` (one criterion consistently failing), `parse_error` (malformed LLM output), or `scope_creep` (too many files being suggested as context).
+
+  2. Fix the root cause — tighten `acceptance_criteria`, fix compilation errors in `checks[]`, or adjust `output[]` scope.
+  3. Reset the task status to `pending` by editing `tasks.yaml` directly:
+
+  ```yaml
+  status: pending
+  retry_count: 0
+  ```
+
+  Then run `orchestos task run ./my-project --id <task-id>` to retry.
+</Accordion>
+
+<Accordion title="QA keeps failing">
+  **Symptom:** The task passes `checks[]` but the QA LLM rejects it on every attempt. `retry_count` climbs toward 3.
+
+  **Cause:** Usually one of three things: acceptance criteria are too vague or check something the LLM can't verify in the written files; `output[]` is so broad that the LLM writes inconsistent results; or the task description is ambiguous. Note that the QA call is itself an LLM call and is subject to the same non-determinism as the executor — a borderline criterion may pass on one run and fail on the next.
+
+  **Fix:**
+
+  1. **Narrow `output[]`** — the more files the LLM can write, the harder it is to be consistent. If possible, split a large task into smaller tasks each with 1–2 output files.
+
+  2. **Improve acceptance criteria** — each criterion should be observable in the output files. Avoid criteria like `"WHEN the code is reviewed THEN it looks clean"`. Write `"WHEN the function is called with null THEN it throws TypeError"` instead.
+
+  3. **Use `--explain` to preview** before running:
+
+  ```bash
+  orchestos task run ./my-project --explain <task-id>
+  ```
+
+  This shows exactly which files the LLM will be given as context and which model will be used — no tokens spent. If the suggested context looks wrong, add explicit `input[]` entries.
+
+  4. **Check the QA reason** in the run detail:
+
+  ```bash
+  orchestos runs --detail <run-id>
+  ```
+
+  The `## Acceptance criteria (LLM)` section shows which criterion failed and why the QA model rejected it.
+</Accordion>
+
+<Accordion title="Context window exceeded">
+  **Symptom:** The LLM call fails with a context length error, or the output is clearly truncated.
+
+  **Cause:** The combined size of the system prompt, injected context files, and task description exceeds the model's context window. This often happens when `input[]` is omitted and the code graph suggests many large files.
+
+  **Fix:**
+
+  1. **Add explicit `input[]`** to override the graph suggestion and limit context to only what's needed:
+
+  ```yaml
+  input:
+    - src/auth/middleware.ts   # Only the files that are actually relevant
+    - src/types/user.ts
+  ```
+
+  2. **Run context compression** to shrink the project context from ~2000 tokens (AGENTS.md) to ~500 tokens (CONTEXT.md):
+
+  ```bash
+  orchestos context compress ./my-project
+  ```
+
+  OrchestOS automatically uses `CONTEXT.md` when it exists. Token savings are visible in `orchestos runs --detail <run-id>` under the `## Cost` section.
+
+  3. **Reduce `output[]` scope** — a task with 10 output files generates a longer system prompt (one contract placeholder per file). Split into multiple focused tasks.
+
+  4. **Preview context size** before running:
+
+  ```bash
+  orchestos task run ./my-project --explain <task-id>
+  ```
+</Accordion>
+
+<Accordion title="'No indexed project' error">
+  **Symptom:** You see an error like `No indexed project at <path>. Run: orchestos init` when running context or graph commands.
+
+  **Cause:** `orchestos init` has not been run for this project, or it was run on a different path.
+
+  **Fix:**
+
+  ```bash
+  orchestos init ./my-project
+  ```
+
+  This detects your stack, writes `AGENTS.md` and `context.json`, saves the project record to `~/.orchestos/db.sqlite`, and indexes the code graph. You only need to run this once per project. After significant code changes, re-index with:
+
+  ```bash
+  orchestos index ./my-project
+  ```
+</Accordion>
+
+<Accordion title="Bun not found">
+  **Symptom:** Running any `orchestos` command produces `bun: command not found` or similar.
+
+  **Cause:** Bun is either not installed or not on your `PATH` in the current shell session.
+
+  **Fix:**
+
+  1. Install Bun if you haven't already:
+
+  ```bash
+  curl -fsSL https://bun.sh/install | bash
+  ```
+
+  2. Restart your terminal, or source your shell config file to update `PATH`:
+
+  ```bash
+  source ~/.bashrc   # or ~/.zshrc
+  ```
+
+  3. Verify:
+
+  ```bash
+  bun --version   # Should print 1.1 or higher
+  ```
+
+  OrchestOS requires Bun ≥ 1.1. After confirming Bun is available, you can optionally add an alias so you don't need to type the full path:
+
+  ```bash
+  # Add to ~/.bashrc or ~/.zshrc
+  alias orchestos="bun /path/to/orchestos/src/cli.ts"
+  ```
+</Accordion>
+
+<Accordion title="API key errors">
+  **Symptom:** Errors like `401 Unauthorized`, `Invalid API key`, or `No API key found` when running tasks.
+
+  **Cause:** The API key for the configured provider is missing, incorrect, or using the wrong format.
+
+  **Fix:**
+
+  1. Check your keys file:
+
+  ```bash
+  cat ~/.orchestos/.env
+  ```
+
+  2. Verify the key prefix matches the provider:
+     - OpenRouter keys start with `sk-or-`
+     - Anthropic keys start with `sk-ant-`
+     - OpenAI keys start with `sk-`
+
+  3. Re-create the file if needed:
+
+  ```bash
+  mkdir -p ~/.orchestos
+  cat > ~/.orchestos/.env <<EOF
+  OPENROUTER_API_KEY=sk-or-...
+  ANTHROPIC_API_KEY=sk-ant-...    # Only needed for provider: anthropic
+  OPENAI_API_KEY=sk-...           # Needed for embeddings or provider: openai
+  EOF
+  ```
+
+  4. Run `orchestos config show ./my-project` to confirm which provider is configured for each role — an error may be happening on a specific role (e.g. QA using Anthropic directly while execute uses OpenRouter).
+</Accordion>
+
+<Accordion title="Cost is unexpectedly high">
+  **Symptom:** Your API bill is higher than expected after running OrchestOS tasks.
+
+  **Cause:** Each `task run` makes at minimum 2 LLM calls (execute + QA). Every retry adds 2 more calls. A task with 3 retries before failure costs 6 LLM calls. `--all` mode multiplies this across every pending task. There is no built-in budget cap for individual task runs.
+
+  **Fix:**
+
+  1. **Use cheaper models for simple tasks.** In `tasks.yaml`, set `executor_model` to a cheaper model for tasks that are generating boilerplate, writing docs, or making small edits:
+
+  ```yaml
+  - id: write-readme
+    executor: openrouter
+    executor_model: deepseek/deepseek-chat   # Cheapest — fine for docs
+    output: [README.md]
+  ```
+
+  2. **Add `checks[]` to fail fast** before the QA call. A single `bun run typecheck` check that catches a compile error saves the full cost of a QA call on every bad attempt.
+
+  3. **Preview before running** — `orchestos task run --explain <task-id>` costs nothing:
+
+  ```bash
+  orchestos task run ./my-project --explain my-task
+  ```
+
+  4. **Monitor per-run cost** in the run detail:
+
+  ```bash
+  orchestos runs --detail <run-id>
+  ```
+
+  The `## Cost` section shows a per-sub-agent breakdown so you can see exactly which role is spending the most.
+
+  5. **Use `--max-cost`** as a circuit breaker for autonomous `orchestos run --graph` runs:
+
+  ```bash
+  orchestos run --graph --max-cost 0.50
+  ```
+</Accordion>
+
+<Accordion title="Worktree conflicts">
+  **Symptom:** You see errors about git worktrees during a task run, or `git worktree list` shows stale entries after a failed run.
+
+  **Cause:** OrchestOS runs each task in an isolated git worktree. If a run exits unexpectedly, the worktree may not be cleaned up. Note that `snapshot_before` captures file content hashes before each run so OrchestOS can restore files on QA failure, but if the process crashes mid-write, no automatic rollback happens — use git to recover.
+
+  **Fix:**
+
+  1. **Debug with `--keep-worktree`** to inspect the state after a failure:
+
+  ```bash
+  orchestos task run ./my-project --id <task-id> --keep-worktree
+  ```
+
+  This keeps the worktree on disk so you can inspect the files the LLM wrote before they were reverted.
+
+  2. **Clean up stale worktrees** manually:
+
+  ```bash
+  git worktree list                           # See all worktrees
+  git worktree remove <path-to-worktree>      # Remove a specific one
+  git worktree prune                          # Remove stale records
+  ```
+
+  3. If OrchestOS complains about a worktree path conflict on the next run, the prune command above usually resolves it.
+</Accordion>
+
+<Accordion title="Embeddings not working / context suggest returns no results">
+  **Symptom:** `orchestos context suggest` returns no results, or `orchestos task run --explain` shows no graph suggestions. The `embed_hits` counter in run details is always 0.
+
+  **Cause:** Semantic embeddings require either an OpenAI API key (for `text-embedding-3-small`) or a local Ollama instance. Without one of these, `orchestos index` stores keyword-based edges only, and similarity search falls back to keyword matching exclusively. The code graph also only tracks import relationships between files — it does not index function calls, class hierarchies, or exported symbols. For tasks like "rename function X across all callers", the graph cannot identify callers automatically.
+
+  **Fix:**
+
+  1. **Add an OpenAI API key** to `~/.orchestos/.env`:
+
+  ```bash
+  echo "OPENAI_API_KEY=sk-..." >> ~/.orchestos/.env
+  ```
+
+  2. **Re-index the project** to generate embeddings now that the key is available:
+
+  ```bash
+  orchestos index ./my-project
+  ```
+
+  3. **Verify** — `orchestos index` output should now report an `embeddings` count:
+
+  ```
+  [index] indexed 84 files, 312 edges, 84 embeddings in 4231ms
+  ```
+
+  4. If you don't have an OpenAI key, you can use Ollama for local embeddings. OrchestOS will detect a running Ollama instance automatically. Without either provider, keyword-only matching still works — it just won't find semantically related files that don't share tokens with the task description.
+
+  5. **For tasks that need precise cross-file symbol tracking** (renaming a function, finding all callers), add explicit `input[]` entries to the task rather than relying on graph suggestions. The graph tracks imports, not symbols.
+</Accordion>
+
+<Accordion title="Tasks run sequentially — no parallel execution">
+  **Symptom:** You have 10 independent tasks and they run one at a time. You expected parallel execution.
+
+  **Cause:** OrchestOS is sequential by design. Tasks run one after the other, even when they have no `depends_on` relationship. There is no built-in parallelism.
+
+  **Fix:**
+
+  1. **Order tasks to maximize throughput** — put the longest-running tasks first in `tasks.yaml` so they complete while you're reviewing earlier results.
+
+  2. **Run tasks manually in separate terminals** — OrchestOS uses SQLite for state, so you can run two separate project directories in parallel in different shells. Within a single project, concurrent `task run` calls are not supported.
+
+  3. **Use `--all` for sequential automation** — if you want to walk away and let OrchestOS process the full backlog:
+
+  ```bash
+  orchestos task run ./my-project --all
+  ```
+
+  This runs every pending task in topological order, stopping if any task reaches `failed_permanent`.
+</Accordion>
+
+<Accordion title="--clarify doesn't trigger / asks for the wrong thing">
+  **Symptom:** `--clarify` doesn't ask a question when you expect it to, or it asks when the task seems clear.
+
+  **Cause:** The clarify heuristic uses keyword matching only — it looks for words like "optimize", "improve", or "fix" without an explicit target file or clear scope in `input[]`. It does not use an LLM call or semantic analysis. If a task has explicit `input[]` entries, clarify will not trigger even if the description is vague.
+
+  **Fix:**
+
+  1. **To force a clarification prompt**, use `--clarify <task-id>` explicitly — it always opens the prompt regardless of heuristic:
+
+  ```bash
+  orchestos task run ./my-project --clarify add-button
+  ```
+
+  2. **To prevent unwanted clarify prompts**, add explicit `input[]` to the task. A task with explicit inputs is treated as unambiguous:
+
+  ```yaml
+  - id: improve-performance
+    input:
+      - src/db/queries.ts    # Explicit input suppresses clarify heuristic
+    output:
+      - src/db/queries.ts
+  ```
+
+  3. The clarify prompt is a single question with no follow-up. Your answer is appended to the task `description` before the LLM call.
+</Accordion>

@@ -1,0 +1,189 @@
+---
+title: "Tasks: Declaring and Running LLM Work in OrchestOS"
+sidebarTitle: "Tasks"
+description: "Learn how tasks work in OrchestOS — from declaration in tasks.yaml through the full lifecycle of pending, running, done, and failure states."
+---
+
+A task is the fundamental unit of work in OrchestOS. You declare every piece of coding work you want an LLM to perform as a task entry in `tasks.yaml`, giving it a unique ID, a plain-language description, and — critically — an explicit list of files it is allowed to write. OrchestOS picks up that declaration, runs the full middleware enrichment chain, calls the LLM inside an isolated sandbox, validates the result, and updates the task's status automatically. You never call the LLM directly; you author tasks and let OrchestOS do the rest.
+
+## Anatomy of a task
+
+Every task maps to a single YAML block. Here is a fully annotated example:
+
+```yaml
+version: 1
+project: my-project
+tasks:
+  - id: add-button                  # Unique kebab-case identifier
+    description: >
+      Create a reusable Button component with hover
+      and disabled states.           # Plain-language brief sent to the LLM
+    executor: anthropic              # openrouter (default) | anthropic | openai | codex
+    skill: implement                 # Optional — injects skill guidelines into the prompt
+
+    input:                           # Files the LLM may READ (omit to auto-suggest from code graph)
+      - src/styles/tokens.css
+
+    output:                          # REQUIRED — the ONLY files the LLM may WRITE
+      - src/components/Button.tsx
+      - src/components/Button.module.css
+
+    depends_on: []                   # Task IDs that must reach "done" before this one runs
+
+    checks:                          # Deterministic shell checks — run BEFORE the QA LLM call
+      - cmd: "bun run typecheck"
+      - cmd: "bun test src/components"
+        timeout_ms: 30000
+
+    acceptance_criteria:             # Evaluated one-by-one by the QA LLM
+      - "WHEN Button receives disabled=true THEN cursor-not-allowed and opacity-50 are applied"
+      - "WHEN onClick is triggered THEN it is not called while disabled=true"
+
+    status: pending                  # Managed by OrchestOS — do not edit manually
+    retry_count: 0                   # Managed by OrchestOS — do not edit manually
+```
+
+### Key fields at a glance
+
+<CardGroup cols={2}>
+  <Card title="id" icon="fingerprint" href="/reference/tasks-yaml">
+    Kebab-case, unique within the file. Used in `depends_on` references and all CLI commands.
+  </Card>
+  <Card title="description" icon="text" href="/reference/tasks-yaml">
+    The plain-language brief sent verbatim to the LLM. Be specific — the LLM sees exactly what you write here.
+  </Card>
+  <Card title="output[]" icon="file-pen" href="/concepts/contracts">
+    The contract. The only files the LLM may write. Any attempt to write outside this list is blocked. See [Contracts](/concepts/contracts).
+  </Card>
+  <Card title="input[]" icon="file-magnifying-glass" href="/concepts/contracts">
+    Files the LLM may read. Omit the field entirely to let OrchestOS auto-suggest relevant files from the code graph.
+  </Card>
+  <Card title="checks[]" icon="circle-check" href="/reference/tasks-yaml">
+    Deterministic shell commands (typecheck, test suites) that run before the QA LLM call. First failure reverts the run immediately — no QA tokens spent.
+  </Card>
+  <Card title="acceptance_criteria[]" icon="list-check" href="/reference/tasks-yaml">
+    WHEN/THEN statements evaluated by the QA LLM one at a time. All must pass for the task to be marked `done`.
+  </Card>
+</CardGroup>
+
+## Task lifecycle
+
+Every task moves through a well-defined set of statuses. OrchestOS manages these automatically — you should never edit `status` or `retry_count` by hand.
+
+```text
+pending  ──►  running  ──►  done
+                │
+                ▼
+             failed  ──► (retry) ──► running  (up to 3 times)
+                                         │
+                                         ▼
+                                  failed_permanent
+```
+
+| Status | Meaning |
+|---|---|
+| `pending` | Waiting to run. Default state when you add a task. |
+| `running` | OrchestOS has picked this task up and is executing it. |
+| `done` | The LLM produced output, all checks passed, and the QA LLM approved every acceptance criterion. |
+| `failed` | The current attempt failed (QA rejection, check failure, or contract violation). The task will be retried automatically on the next `task run`. |
+| `failed_permanent` | Three consecutive failures. No more automatic retries. |
+| `blocked` | A task in `depends_on` has not yet reached `done`. |
+
+<Note>
+  A task transitions from `failed` back to `pending` between run invocations. Each call to `orchestos task run` picks up the next `pending` task. Run `orchestos task run --all` to process all tasks in dependency order in a single command.
+</Note>
+
+## The retry cycle
+
+OrchestOS retries a failing task up to three times before giving up. Each failure increments `retry_count`. On the third failure the status becomes `failed_permanent` and the diagnosis agent runs automatically.
+
+<Steps>
+  <Step title="Task fails (attempt 1 or 2)">
+    Status becomes `failed`. The last QA rejection reason is stored in `retry_reason`. Files are fully reverted — nothing partial lands on your branch.
+  </Step>
+  <Step title="Next run picks it up">
+    On the next `orchestos task run`, the task re-enters the full middleware chain with a fresh context. OrchestOS tries again from scratch.
+  </Step>
+  <Step title="Third failure → failed_permanent">
+    After three QA failures OrchestOS stops retrying and marks the task `failed_permanent`. The diagnosis agent automatically reads the last three runs and classifies the failure pattern.
+  </Step>
+  <Step title="Auto-diagnosis">
+    `orchestos task diagnose <task-id>` (also triggered automatically) calls a lightweight LLM to analyze the pattern and return a structured suggestion — for example, "TypeScript errors in output files — check import paths" or "Criterion 3 fails consistently — narrow the output scope".
+  </Step>
+</Steps>
+
+<Tip>
+  You can also trigger diagnosis manually at any time: `orchestos task diagnose <task-id>`. It reads the last three run records from SQLite without making any additional LLM write calls.
+</Tip>
+
+## Sequencing tasks with depends_on
+
+`depends_on` takes a list of task IDs that must reach `done` before the current task is eligible to run. OrchestOS enforces this order automatically — a task with unmet dependencies has status `blocked` and is skipped in `--all` runs.
+
+```yaml
+tasks:
+  - id: design-api
+    description: "Design the authentication API interface and document it"
+    executor: anthropic
+    output:
+      - docs/api-auth.md
+    depends_on: []          # No prerequisites — runs first
+
+  - id: scaffold-endpoints
+    description: "Implement the auth endpoints defined in docs/api-auth.md"
+    executor: openrouter
+    input:
+      - docs/api-auth.md    # Reads the output of the previous task
+    output:
+      - src/routes/auth.ts
+    depends_on:
+      - design-api          # Waits until design-api is "done"
+
+  - id: write-tests
+    description: "Write integration tests for the auth endpoints"
+    executor: openrouter
+    input:
+      - src/routes/auth.ts
+    output:
+      - src/routes/auth.test.ts
+    depends_on:
+      - scaffold-endpoints  # Forms a chain: design → scaffold → test
+```
+
+<Warning>
+  OrchestOS validates that `depends_on` references form a valid DAG (directed acyclic graph) with no cycles. A circular dependency causes the run to fail at startup with an explicit error message.
+</Warning>
+
+## Deterministic checks
+
+Checks run shell commands inside the worktree after the LLM writes files, but *before* the QA LLM call. This fail-fast design means a typecheck error reverts the files immediately and retries — you pay no QA tokens for a run that won't pass.
+
+```yaml
+checks:
+  - cmd: "bun run typecheck"          # exit 0 = pass
+  - cmd: "bun test src/services"      # exit 0 = pass
+  - cmd: "grep -r 'TODO' src/auth.ts"
+    expect_exit: 1                    # exit 1 = grep found nothing = no TODOs
+    timeout_ms: 10000
+```
+
+Each check runs as a separate process. You cannot chain commands with `&&`, `||`, or `;` — declare them as separate entries instead.
+
+## Running tasks
+
+```bash
+# Run the next pending task
+orchestos task run ./my-project
+
+# Run a specific task by ID
+orchestos task run ./my-project --id add-button
+
+# Dry-run: show the plan and context, make zero LLM calls
+orchestos task run ./my-project --explain add-button
+
+# Run all tasks in dependency order
+orchestos task run ./my-project --all
+
+# Check current status of every task
+orchestos task status ./my-project
+```

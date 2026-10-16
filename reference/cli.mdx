@@ -1,0 +1,587 @@
+---
+title: "OrchestOS CLI Command Reference — All Flags and Options"
+sidebarTitle: "CLI Reference"
+description: "Every OrchestOS CLI command documented with flags and usage examples — task workflow, specs, skills, instincts, context, config, and constitution."
+---
+
+OrchestOS is controlled entirely through its CLI. Every command operates on a project directory you pass as an argument, defaulting to the current working directory when omitted. All run history, task state, and context data is stored in `~/.orchestos/db.sqlite` — you never need to manage state files manually. The sections below group commands by function and document every flag.
+
+<Accordion title="Project setup: detect, init, index, summary">
+  These commands establish the project record, write context files, and build the code graph that powers context suggestions.
+
+  **`orchestos detect [path]`**
+
+  Scans the project stack and generates `AGENTS.md` and `context.json` without touching the database. Use this for a quick preview before committing to `init`.
+
+  ```bash
+  orchestos detect ./my-project
+  ```
+
+  ---
+
+  **`orchestos init [path]`**
+
+  Full initialization: detects the stack, writes `AGENTS.md` and `context.json`, saves the project to `~/.orchestos/db.sqlite`, and indexes the code graph for context suggestions. Run this once per project before using any other commands.
+
+  ```bash
+  orchestos init ./my-project
+  orchestos init ./my-project --pdf   # Also generate a PDF summary
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--pdf` | Generate a `<project>-summary.pdf` in the project root alongside the normal output |
+
+  ---
+
+  **`orchestos index [path]`**
+
+  Re-indexes the code graph after significant code changes. `init` runs this automatically, but subsequent file additions or refactors won't be picked up until you re-index.
+
+  ```bash
+  orchestos index ./my-project
+  orchestos index --project my-app          # Reference a saved project by name
+  orchestos index ./my-project --no-embed   # Skip embedding generation
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--project <name>` | Reference a saved project by name or path instead of a filesystem path |
+  | `--no-embed` | Skip embedding generation — useful in environments without an API key |
+
+  ---
+
+  **`orchestos summary [path]`**
+
+  Generates a PDF summary of the project. Runs `init` automatically if the project hasn't been saved yet.
+
+  ```bash
+  orchestos summary ./my-project
+  orchestos summary ./my-project --out ./reports/summary.pdf
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--out <file>` | Output PDF path. Defaults to `<project>-summary.pdf` in the project root |
+</Accordion>
+
+<Accordion title="Task workflow: task init, task list, task run, task status, task diagnose">
+  The core task lifecycle commands. Start with `task init` to scaffold `tasks.yaml`, edit it to declare your tasks, then use `task run` to execute them.
+
+  **`orchestos task init [path]`**
+
+  Scaffolds a `tasks.yaml` file in the project directory with example fields and comments.
+
+  ```bash
+  orchestos task init ./my-project
+  ```
+
+  ---
+
+  **`orchestos task list [path]`**
+
+  Prints a status table showing every task: ID, status, retry count, QA verdict, and cost.
+
+  ```bash
+  orchestos task list ./my-project
+  ```
+
+  ---
+
+  **`orchestos task run [path]`**
+
+  Runs the next pending task (or a specific task). The most-used command in OrchestOS. Supports multiple execution modes.
+
+  ```bash
+  # Run the next pending task
+  orchestos task run ./my-project
+
+  # Run a specific task by id
+  orchestos task run ./my-project --id add-button
+
+  # Dry-run: show plan, suggested context, and model — no LLM call
+  orchestos task run ./my-project --explain add-button
+
+  # Run all pending tasks in dependency order
+  orchestos task run ./my-project --all
+
+  # Expand a plan task into sub-agents
+  orchestos task run ./my-project --expand <plan-task-id>
+
+  # Ask for clarification before running
+  orchestos task run ./my-project --clarify add-button
+
+  # Transient model override for a single run
+  orchestos task run ./my-project --id add-button --model anthropic/claude-sonnet-5
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--id <task-id>` | Run a specific task by its `id` field |
+  | `--explain <task-id>` | Dry-run: print the model, context suggestions, checks, and criteria without making any LLM calls |
+  | `--all` | Run all pending tasks in topological (dependency) order |
+  | `--expand <plan-task-id>` | Expand a plan task: the LLM generates a `.plan.yaml`, which is then executed as sequential sub-agents |
+  | `--clarify <task-id>` | Prompt for a clarification question before running; the answer is appended to the task description |
+  | `--sandbox <mode>` | Sandbox mode: `worktree` (default for tasks.yaml runs), `cwd`, or `auto` |
+  | `--keep-worktree` | Keep the git worktree on failure for post-mortem debugging |
+  | `--model <model>` | Transient model override for this run only — does not persist in `tasks.yaml` |
+  | `--engine <engine>` | Executor engine override for this run: `single-shot`, `agentic`, or `external` — does not persist |
+
+  ---
+
+  **`orchestos task status [path]`**
+
+  Prints a table with each task's current status, retry count, QA verdict, and run cost.
+
+  ```bash
+  orchestos task status ./my-project
+  ```
+
+  ---
+
+  **`orchestos task diagnose <task-id>`**
+
+  Analyzes the failure pattern across the last 3 run records for the task and returns a structured suggestion. Runs automatically when a task reaches `failed_permanent`.
+
+  ```bash
+  orchestos task diagnose add-button
+  ```
+
+  Possible failure pattern classifications: `deterministic_check`, `qa_specific_criterion`, `parse_error`, `scope_creep`.
+</Accordion>
+
+<Accordion title="Observability: runs, dashboard">
+  Commands for inspecting run history and monitoring task execution.
+
+  **`orchestos runs`**
+
+  Lists recent run records with status, model, cost, and task class.
+
+  ```bash
+  orchestos runs                        # Last 10 runs
+  orchestos runs --limit 50             # Last 50 runs
+  orchestos runs --detail <run-id>      # Full evidence for one run
+  orchestos runs --export               # Dump all runs to runs-export.json
+  orchestos runs --analyze              # Pattern analysis via Haiku — suggests improvements
+  orchestos runs --analyze --last 30    # Analyze the last 30 runs
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--limit <n>` | Number of runs to display. Default: `10` |
+  | `--detail <run-id>` | Full evidence: provider, model, checks results, QA verdict, cost breakdown per sub-agent, context warnings, files attempted/authorized/blocked |
+  | `--export` | Export all run history to `runs-export.json` in the current directory |
+  | `--analyze` | Analyze runs for recurring failure patterns and suggest improvements. Automatically proposes instincts for patterns seen ≥ 3 times |
+  | `--last <n>` | Number of recent runs to include in analysis. Default: `20` |
+
+  ---
+
+  **`orchestos dashboard`**
+
+  Starts a local web dashboard served from SQLite. No external dependencies.
+
+  ```bash
+  orchestos dashboard                   # Starts on http://localhost:4242
+  orchestos dashboard --port 3000       # Custom port
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--port <n>` | Port to listen on. Default: `4242` |
+
+  The dashboard has four views: `/runs` (cost breakdown, context warnings), `/tasks` (status, retry count, QA verdict), `/instincts` (approve/reject proposals from the UI), `/specs` (lint badge, archived specs).
+</Accordion>
+
+<Accordion title="Specs: spec create, spec draft, spec show, spec list, spec approve, spec lint, spec archive">
+  Specs live in `.orchestos/specs/<task-id>.md` and contain WHEN/THEN acceptance criteria for a task. When `requireSpec: true` is set in `orchestos.config.yaml`, OrchestOS blocks task execution until the spec is approved.
+
+  **`orchestos spec create <task-id>`**
+
+  Scaffolds an empty spec file for the task.
+
+  ```bash
+  orchestos spec create add-button
+  ```
+
+  ---
+
+  **`orchestos spec draft <task-id>`**
+
+  Uses the LLM to generate a spec draft with WHEN/THEN acceptance criteria based on the task description.
+
+  ```bash
+  orchestos spec draft add-button --description "Create a reusable Button component"
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--description <text>` | Task description to generate the spec from (required) |
+
+  ---
+
+  **`orchestos spec show <task-id>`**
+
+  Prints the spec file for a task to stdout.
+
+  ```bash
+  orchestos spec show add-button
+  ```
+
+  ---
+
+  **`orchestos spec list`**
+
+  Lists all specs with their ID, approval status, and clarification state.
+
+  ```bash
+  orchestos spec list
+  orchestos spec list --all    # Include archived specs
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--all` | Include specs in the archive |
+
+  ---
+
+  **`orchestos spec approve <task-id>`**
+
+  Approves the spec, allowing the task to run when `requireSpec: true`. Blocked if the spec has unresolved clarifications or fails validation.
+
+  ```bash
+  orchestos spec approve add-button
+  ```
+
+  ---
+
+  **`orchestos spec lint <task-id>`**
+
+  Checks that all acceptance criteria use the `WHEN/THEN` format and that brownfield specs include the required `## ADDED / ## MODIFIED / ## REMOVED` delta headers. Exits with code 1 if findings exist.
+
+  ```bash
+  orchestos spec lint add-button
+  ```
+
+  ---
+
+  **`orchestos spec archive <task-id>`**
+
+  Moves the spec to `.orchestos/specs/archive/YYYY-MM-DD-<id>.md`.
+
+  ```bash
+  orchestos spec archive add-button
+  ```
+</Accordion>
+
+<Accordion title="Skills: skill add, skill list, skill build, skill scaffold, skill languages, skill fetch">
+  Skills are YAML files that inject reusable guidelines, anti-patterns, and language-specific verifiers into task prompts.
+
+  **`orchestos skill add <id>`**
+
+  Scaffolds a new skill YAML file in `skills/`. The ID must be kebab-case.
+
+  ```bash
+  orchestos skill add frontend-design
+  orchestos skill add fix-typescript-errors
+  ```
+
+  ---
+
+  **`orchestos skill list`**
+
+  Lists all compiled skills with their ID, version, and target platforms.
+
+  ```bash
+  orchestos skill list
+  ```
+
+  ---
+
+  **`orchestos skill build`**
+
+  Compiles skills from `skills/` to `dist/skills/<target>/`. Supports language-aware compilation when `--project` is provided.
+
+  ```bash
+  orchestos skill build
+  orchestos skill build --target claude            # Compile only for Claude target
+  orchestos skill build --id frontend-design       # Compile only one skill
+  orchestos skill build --project ./my-project     # Language-aware: detects project language
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--target <target>` | Compile only for this target: `claude`, `cursor`, or `openai` |
+  | `--id <id>` | Compile only the specified skill |
+  | `--project <path>` | Project root for language-aware compilation — selects the matching `language_targets` section |
+
+  ---
+
+  **`orchestos skill scaffold`**
+
+  Generates a language-specific skill YAML pre-populated with typical verifiers and anti-patterns for that language.
+
+  ```bash
+  orchestos skill scaffold --language Rust
+  orchestos skill scaffold --language TypeScript --id my-ts-skill
+  orchestos skill scaffold --language "Visual Basic" --out skills/vb.yaml
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--language <lang>` | Target language (required). Run `skill languages` to see all 36 supported values |
+  | `--id <id>` | Custom skill ID in kebab-case. Defaults to `<language>-development` |
+  | `--out <path>` | Output path. Defaults to `skills/<id>.yaml` |
+
+  ---
+
+  **`orchestos skill languages`**
+
+  Prints all 36 languages supported for language-aware skill generation.
+
+  ```bash
+  orchestos skill languages
+  ```
+
+  Supported languages include: TypeScript, JavaScript, Python, C#, Rust, Go, Java, Kotlin, Scala, Ruby, PHP, Swift, Elixir, Haskell, Lua, Perl, R, Dart, Svelte, OCaml, Julia, VB, F#, Shell, PowerShell, SQL, and more.
+
+  ---
+
+  **`orchestos skill fetch`**
+
+  Fetches a curated skill from the remote registry.
+
+  ```bash
+  orchestos skill fetch --language TypeScript    # Fetch curated TypeScript skill
+  orchestos skill fetch --list                   # List available remote skills
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--language <lang>` | Language to fetch a curated skill for |
+  | `--list` | List all skills available in the remote registry |
+</Accordion>
+
+<Accordion title="Instincts: instinct list, instinct add, instinct review, instinct approve, instinct reject, instinct set-confidence">
+  Instincts are atomic learned behaviors injected into the system prompt before each task run. They encode project-specific patterns the LLM should follow. Instincts with `confidence >= 0.8` and `verified: true` are applied automatically; instincts below `0.6` are never applied without review.
+
+  **`orchestos instinct list`**
+
+  Lists all instincts with their ID, trigger, confidence score, source, and verification status.
+
+  ```bash
+  orchestos instinct list
+  orchestos instinct list --unverified          # Show only unverified instincts
+  orchestos instinct list --source manual       # Filter by source
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--unverified` | Filter to show only instincts pending review |
+  | `--source <type>` | Filter by source: `manual` or `auto` |
+
+  ---
+
+  **`orchestos instinct add`**
+
+  Adds a manual instinct with `confidence: 1.0`, `source: manual`, `verified: true`. Applied immediately on the next matching run.
+
+  ```bash
+  orchestos instinct add \
+    --trigger "WHEN task uses Stripe" \
+    --action "import from src/billing/stripe.ts"
+
+  # Optional: lower confidence for tentative rules
+  orchestos instinct add \
+    --trigger "WHEN output includes a new route" \
+    --action "register the route in src/routes/index.ts" \
+    --confidence 0.8
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--trigger <text>` | Condition that activates the instinct (required) |
+  | `--action <text>` | Behavior or instruction to inject when triggered (required) |
+  | `--confidence <value>` | Override default confidence of `1.0`. Range: `0`–`1` |
+
+  ---
+
+  **`orchestos instinct review`**
+
+  Lists all unverified auto-proposed instincts — typically generated by `runs --analyze` when a pattern appears in ≥ 3 runs.
+
+  ```bash
+  orchestos instinct review
+  ```
+
+  ---
+
+  **`orchestos instinct approve <id>`**
+
+  Sets `verified: true` and increases `confidence` by `+0.1` (capped at `1.0`). The instinct becomes eligible for automatic application on future runs.
+
+  ```bash
+  orchestos instinct approve abc123
+  ```
+
+  ---
+
+  **`orchestos instinct reject <id>`**
+
+  Deletes the proposed instinct.
+
+  ```bash
+  orchestos instinct reject abc123
+  ```
+
+  ---
+
+  **`orchestos instinct set-confidence <id> <0-1>`**
+
+  Manually sets the confidence score for an instinct. OrchestOS recalculates `verified` automatically based on the new value.
+
+  ```bash
+  orchestos instinct set-confidence abc123 0.9
+  ```
+</Accordion>
+
+<Accordion title="Memory: memory conflicts">
+  OrchestOS stores persistent memory entries across sub-agent runs and uses BM25 full-text search to detect conflicts between entries.
+
+  **`orchestos memory conflicts`**
+
+  Lists all unresolved memory conflicts detected by the conflict classifier.
+
+  ```bash
+  orchestos memory conflicts
+  orchestos memory conflicts --project ./my-project
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--project <path>` | Specify the project root. Defaults to cwd |
+
+  Conflicts are classified by relation type: `conflict_with`, `supersedes`, `compatible`, `scoped`, `related`, or `not_conflict`. Conflicts detected as `conflict_with` require manual resolution before they are cleared.
+</Accordion>
+
+<Accordion title="Context: context show, context update, context list, context compress, context suggest">
+  Commands for managing the saved project context that gets injected into every task prompt.
+
+  **`orchestos context show [path]`**
+
+  Prints the saved `AGENTS.md` content from the database.
+
+  ```bash
+  orchestos context show ./my-project
+  ```
+
+  ---
+
+  **`orchestos context update [path]`**
+
+  Re-detects the project stack and updates the saved context in the database and on disk.
+
+  ```bash
+  orchestos context update ./my-project
+  ```
+
+  ---
+
+  **`orchestos context list`**
+
+  Lists all saved projects in the database with their detected stack.
+
+  ```bash
+  orchestos context list
+  ```
+
+  ---
+
+  **`orchestos context compress [path]`**
+
+  Generates `CONTEXT.md` — a compressed version of `AGENTS.md` that uses roughly 500 tokens vs. ~2000 for the full context. OrchestOS uses `CONTEXT.md` automatically when it exists. Token savings are visible in `runs --detail`.
+
+  ```bash
+  orchestos context compress ./my-project
+  ```
+
+  ---
+
+  **`orchestos context suggest <task>`**
+
+  Uses the code graph to suggest the most relevant files for a task description. Combines keyword scoring and semantic embeddings (when available) to rank candidates.
+
+  ```bash
+  orchestos context suggest "fix auth login flow"
+  orchestos context suggest "add pagination to user list" --project my-app --top 5
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--project <name>` | Saved project name or path |
+  | `--top <n>` | Maximum results to return. Default: `10` |
+  | `--no-expand` | Disable 1-hop neighbor expansion in the import graph |
+
+  Result icons: `●` = direct keyword match · `◆` = semantic (embedding) match · `○` = 1-hop graph neighbor
+</Accordion>
+
+<Accordion title="Config: config init, config show">
+  Commands for managing `orchestos.config.yaml`. See the [Config File reference](/reference/config) for the full field documentation.
+
+  **`orchestos config init [path]`**
+
+  Creates `orchestos.config.yaml` in the project directory with all fields populated with defaults.
+
+  ```bash
+  orchestos config init ./my-project
+  ```
+
+  ---
+
+  **`orchestos config show [path]`**
+
+  Prints the active config and shows which model would be selected for each pending task in `tasks.yaml`.
+
+  ```bash
+  orchestos config show ./my-project
+  ```
+</Accordion>
+
+<Accordion title="Constitution: constitution init, constitution show">
+  The constitution is a `CONSTITUTION.md` file that constrains what the agent can and cannot do. It is automatically injected into every task prompt — no config required, just create the file.
+
+  **`orchestos constitution init [path]`**
+
+  Scaffolds a `CONSTITUTION.md` template with `## ALLOWED`, `## FORBIDDEN`, and `## REQUIRE_CONFIRMATION` sections.
+
+  ```bash
+  orchestos constitution init ./my-project
+  ```
+
+  Example constitution:
+
+  ```markdown
+  # CONSTITUTION.md
+
+  ## ALLOWED
+  - Modify files under src/
+  - Create new files under src/
+
+  ## FORBIDDEN
+  - Modify .env files
+  - Delete files
+  - Modify src/db/schema.ts without confirmation
+
+  ## REQUIRE_CONFIRMATION
+  - Any change to src/db/migrations/
+  ```
+
+  ---
+
+  **`orchestos constitution show [path]`**
+
+  Parses and prints the active `CONSTITUTION.md`, showing the count of rules in each section.
+
+  ```bash
+  orchestos constitution show ./my-project
+  ```
+</Accordion>

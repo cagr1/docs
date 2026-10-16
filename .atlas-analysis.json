@@ -1,0 +1,102 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "OrchestOS",
+  "projectDescription": "A contract-first CLI that runs LLM-powered coding tasks in isolated sandboxes, validating every output against declared file contracts with deterministic checks and a QA LLM.",
+  "theme": "luma",
+  "primaryColor": "#bf3b41",
+  "lightColor": "#f7ecd7",
+  "darkColor": "#090908",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/tasks",
+              "concepts/contracts",
+              "concepts/middleware",
+              "concepts/sandbox"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/task-workflow",
+              "guides/specs",
+              "guides/skills",
+              "guides/instincts",
+              "guides/sub-agents",
+              "guides/dashboard"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/tasks-yaml",
+              "reference/config",
+              "reference/models",
+              "reference/cli",
+              "reference/troubleshooting"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Contract-first task execution — each task declares exactly which files the LLM may write",
+    "Git worktree sandbox — changes are isolated until QA passes, then merged",
+    "Deterministic checks — shell commands run before the QA LLM to fail fast",
+    "WHEN/THEN acceptance criteria validated by a second LLM (QA call)",
+    "Automatic failure diagnosis when a task reaches failed_permanent after 3 retries",
+    "Middleware chain enrichment — spec-gate, memory, skills, instincts, and context injected before every LLM call",
+    "Code graph with semantic embeddings for automatic context suggestion",
+    "Sub-agents — decompose a plan task into sequential sub-tasks with isolated contexts",
+    "Instincts — learned behaviors injected into prompts, approved by the human before use",
+    "Local web dashboard for runs, tasks, specs, and instincts management",
+    "Skills library — reusable prompt guidelines compiled for Claude, Cursor, and OpenAI",
+    "Model routing — route tasks to different LLM providers by task type",
+    "SQLite evidence store — every run logs tokens, cost, QA verdict, and file diffs"
+  ],
+  "publicApiSurface": [
+    "orchestos init <path>",
+    "orchestos detect <path>",
+    "orchestos task init <path>",
+    "orchestos task list <path>",
+    "orchestos task run <path>",
+    "orchestos task run <path> --id <task-id>",
+    "orchestos task run <path> --all",
+    "orchestos task run <path> --expand <plan-task-id>",
+    "orchestos task run <path> --explain <task-id>",
+    "orchestos task run <path> --clarify <task-id>",
+    "orchestos task status <path>",
+    "orchestos task diagnose <task-id>",
+    "orchestos runs",
+    "orchestos runs --detail <run-id>",
+    "orchestos runs --analyze",
+    "orchestos runs --export",
+    "orchestos dashboard [--port <n>]",
+    "orchestos spec create/draft/show/list/approve/lint/archive <task-id>",
+    "orchestos skill add/list/build/scaffold/languages/fetch",
+    "orchestos instinct list/add/review/approve/reject/set-confidence",
+    "orchestos memory conflicts",
+    "orchestos context show/update/list/compress/suggest",
+    "orchestos index <path>",
+    "orchestos constitution init/show <path>",
+    "orchestos config init/show <path>",
+    "tasks.yaml — version, project, tasks[].id/description/executor/skill/input/output/depends_on/checks/acceptance_criteria",
+    "orchestos.config.yaml — models.planner/executor_heavy/executor_light/default/qa, agentic.maxIterations",
+    "CONSTITUTION.md — ALLOWED/FORBIDDEN/REQUIRE_CONFIRMATION sections"
+  ]
+}

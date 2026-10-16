@@ -1,0 +1,171 @@
+---
+title: "Instincts: Atomic Learned Behaviors for Every Task"
+sidebarTitle: "Instincts"
+description: "Instincts are trigger→action rules that OrchestOS injects into every task prompt, encoding patterns your project has proven to need."
+---
+
+Instincts are the smallest unit of institutional memory in OrchestOS. Each instinct encodes a single behavioral rule — a trigger condition paired with an action — and the harness injects every qualifying instinct into the system prompt before each LLM call. Over time, instincts capture project-specific knowledge that would otherwise get re-discovered (or missed) on every run: which module owns Stripe calls, which files must never be imported directly, which patterns your QA model consistently rejects.
+
+## What an instinct looks like
+
+Every instinct is a **trigger → action** pair stored in SQLite with a `confidence` score between `0` and `1` and a `verified` flag. Before each run, the `instinct-apply` middleware loads all qualifying instincts and appends them to the system prompt as behavioral nudges.
+
+```text
+TRIGGER:  "WHEN task uses Stripe"
+ACTION:   "THEN import from src/billing/stripe.ts"
+```
+
+The harness only injects instincts that pass the confidence gate:
+
+| Confidence | Verified | Applied automatically? |
+|---|---|---|
+| `< 0.6` | any | ❌ Never — too uncertain |
+| `0.6 – 0.79` | `false` | ❌ Needs human approval first |
+| `0.6 – 0.79` | `true` | ❌ Still below auto-apply threshold |
+| `≥ 0.8` | `false` | ❌ Not verified — needs approval |
+| `≥ 0.8` | `true` | ✅ Yes — injected on every matching run |
+
+<Note>
+Manually added instincts start at `confidence: 1.0` and `verified: true`, so they are applied immediately. Auto-proposed instincts start at `confidence: 0.6` and `verified: false`, and are **never** injected without human approval.
+</Note>
+
+## Example instincts worth adding
+
+Here are concrete examples of instincts that encode real project conventions:
+
+```text
+TRIGGER: "WHEN task touches authentication"
+ACTION:  "THEN use the shared session helper at src/auth/session.ts — never import jwt directly"
+
+TRIGGER: "WHEN task writes a React component"
+ACTION:  "THEN co-locate the CSS module file and export the component as a named export"
+
+TRIGGER: "WHEN task modifies the database schema"
+ACTION:  "THEN add a migration file under db/migrations/ following the YYYYMMDD_description.sql convention"
+
+TRIGGER: "WHEN task calls an external API"
+ACTION:  "THEN wrap the call in src/lib/fetch.ts — it handles retries, timeouts, and error logging"
+```
+
+## Adding instincts manually
+
+You are always in control. Adding an instinct by hand sets `source: manual`, `confidence: 1.0`, and `verified: true` — it is active on the next run.
+
+```bash
+orchestos instinct add "<trigger>" "<action>"
+```
+
+```bash
+orchestos instinct add \
+  "WHEN task uses Stripe" \
+  "THEN import from src/billing/stripe.ts"
+```
+
+<Tip>
+Keep trigger conditions specific. A trigger that matches every run ("WHEN any task runs") drowns the model in noise. Scope triggers to a subsystem, file pattern, or task type.
+</Tip>
+
+## Listing instincts
+
+```bash
+orchestos instinct list
+```
+
+This prints all instincts — manual and auto-proposed — along with their `confidence`, `source`, and `verified` status. Use it to audit what the harness is injecting and spot duplicates before adding more.
+
+## The continuous learning loop
+
+OrchestOS watches your runs and proposes new instincts automatically:
+
+1. You run `orchestos runs --analyze` (or pass `--analyze` after `--all`).
+2. A Haiku model scans the last N runs for recurring patterns — file paths that always appear together, imports that are consistently added, criteria that repeatedly fail in the same way.
+3. When **three or more runs share a pattern**, OrchestOS calls `instinct propose` internally, creating an auto-instinct at `confidence: 0.6`, `verified: false`.
+4. The instinct sits in the review queue. **Nothing reaches the harness until you approve it.**
+
+```bash
+orchestos runs --analyze          # scan recent runs for patterns
+orchestos runs --analyze --last 20  # scan the last 20 runs specifically
+```
+
+## Reviewing and approving auto-proposals
+
+<Steps>
+  <Step title="Run the analyzer">
+    Trigger pattern analysis across your recent runs. OrchestOS will propose instincts for any pattern it sees in three or more runs.
+
+    ```bash
+    orchestos runs --analyze
+    ```
+  </Step>
+
+  <Step title="Inspect proposals">
+    List all unverified auto-proposals. Each entry shows the trigger, action, and current confidence.
+
+    ```bash
+    orchestos instinct review
+    ```
+
+    Example output:
+
+    ```text
+    ID       SOURCE  CONF   VERIFIED  TRIGGER
+    a1b2c3   auto    0.60   false     WHEN task uses Stripe
+    d4e5f6   auto    0.60   false     WHEN task touches src/auth/
+    ```
+  </Step>
+
+  <Step title="Evaluate each proposal">
+    Read the trigger and action carefully. Ask: does this reflect a real convention in your project, or is it an artifact of a one-off run?
+  </Step>
+
+  <Step title="Approve a proposal">
+    Approving bumps `confidence` by `+0.1` (so `0.6 → 0.7`) and sets `verified: true`. If the instinct is still below `0.8`, you can approve it again or use `set-confidence` to promote it directly.
+
+    ```bash
+    orchestos instinct approve <id>
+    ```
+  </Step>
+
+  <Step title="Reject a proposal">
+    Rejecting permanently deletes the proposal. It will not reappear unless the pattern is detected again in future runs.
+
+    ```bash
+    orchestos instinct reject <id>
+    ```
+  </Step>
+</Steps>
+
+## Adjusting confidence
+
+If you want to fine-tune how strongly OrchestOS trusts an instinct — for example, promoting a freshly approved one to auto-apply, or demoting one that has caused issues — set its confidence directly:
+
+```bash
+orchestos instinct set-confidence <id> <0-1>
+```
+
+```bash
+# Promote an approved instinct to auto-apply territory
+orchestos instinct set-confidence a1b2c3 0.85
+
+# Demote an instinct below the review threshold (also forces verified=false)
+orchestos instinct set-confidence a1b2c3 0.50
+```
+
+<Warning>
+Setting confidence below `0.6` automatically forces `verified: false`. This is a safety rail — an instinct you are uncertain about should not quietly reach auto-apply status later without an explicit re-approval.
+</Warning>
+
+## How instincts fit into the middleware chain
+
+Instincts are applied by the `instinct-apply` middleware, which runs tenth in the enrichment chain — just before `prompt-build`. By the time instincts are injected, the task's context, memory, skills, and constitution are already loaded. Instincts add the final behavioral layer on top.
+
+```text
+spec-gate → sandbox-setup → classify-route → memory-fetch → skill-route →
+tool-policy → constitution-load → context-source → instinct-apply → prompt-build
+```
+
+Only instincts where `confidence >= 0.8` **and** `verified: true` are loaded by `instinct-apply`. All others remain in SQLite, visible via `instinct list` and `instinct review`, but never injected.
+
+## Human always decides
+
+No auto-proposed instinct ever reaches the harness without your explicit approval. `orchestos runs --analyze` can propose all it wants — the instinct gate is yours to open. This is by design: automated pattern detection can surface useful signal, but only you know whether a pattern reflects an intentional convention or a coincidence worth ignoring.

@@ -1,0 +1,167 @@
+---
+title: "OrchestOS Model Routing — LLM Selection and Task Classes"
+sidebarTitle: "Model Routing"
+description: "How OrchestOS classifies tasks and routes each to the right model role — planner, executor_heavy, executor_light, or default — with example configs."
+---
+
+OrchestOS classifies every task before it makes an LLM call and routes it to the most appropriate model based on that classification. This lets you assign a capable (and expensive) model to tasks that need deep reasoning while keeping costs down for mechanical, repetitive work. You configure the routing once in `orchestos.config.yaml`, and every subsequent task run uses the right model automatically — no changes to individual tasks required.
+
+## How routing works
+
+When you run a task, OrchestOS inspects the task `description` and applies a keyword-based classification to assign it a **task class**. Each task class maps to a model role in your config:
+
+| Task class | Matched keywords | Model role used |
+|---|---|---|
+| `plan` | plan, design (at start of description), architect, scaffold, blueprint, roadmap | `models.planner` |
+| `fix` | fix, error, bug, broken, crash, fails, wrong | `models.executor_heavy` |
+| `implement` | _(default — any description not matched above)_ | `models.executor_heavy` |
+| `doc` | doc, comment, readme, changelog, describe | `models.executor_light` |
+| `review` | review, audit, check, inspect | `models.executor_light` |
+
+The QA evaluation call always uses `models.qa`, regardless of the task class of the task being evaluated.
+
+**Per-task overrides always win.** If a task in `tasks.yaml` declares an `executor` or `executor_model` field, OrchestOS uses that model regardless of the config-level routing. This is how you pin a specific task to Claude for architectural decisions while letting cheaper models handle the rest.
+
+```yaml
+tasks:
+  - id: design-api-interface
+    executor: anthropic              # Claude — direct Anthropic API
+    description: "Design the auth service API with token refresh and revocation"
+    output: [docs/api-auth.md]
+
+  - id: scaffold-endpoints
+    executor: openrouter             # OpenRouter — cheaper, mechanical
+    executor_model: deepseek/deepseek-v4-flash
+    description: "Generate the route handlers from docs/api-auth.md"
+    depends_on: [design-api-interface]
+    output: [src/routes/auth.ts]
+```
+
+## Supported providers
+
+<ParamField path="openrouter" type="provider">
+  Routes calls through [OpenRouter](https://openrouter.ai), which gives you access to Claude, GPT-4o, Gemini, DeepSeek, Llama, and many others under a single `OPENROUTER_API_KEY`. This is the recommended starting point — one key, maximum model flexibility. OpenRouter model IDs use the format `provider/model-name`, e.g. `anthropic/claude-sonnet-5` or `deepseek/deepseek-v4-flash`.
+</ParamField>
+
+<ParamField path="anthropic" type="provider">
+  Direct calls to the Anthropic API. Requires `ANTHROPIC_API_KEY` in `~/.orchestos/.env`. Use this when you need direct API access without going through an intermediary, or when you want to use Anthropic-specific features. Model IDs are Anthropic native names, e.g. `claude-opus-4-8`.
+</ParamField>
+
+<ParamField path="openai" type="provider">
+  Direct calls to the OpenAI API. Requires `OPENAI_API_KEY`. Also used for semantic embeddings (`text-embedding-3-small`) when `orchestos index` generates file embeddings for the code graph. Model IDs follow OpenAI naming, e.g. `gpt-4o`.
+</ParamField>
+
+<ParamField path="codex" type="provider">
+  Uses the OpenAI Codex executor binary. Requires the Codex CLI to be installed and available on your `PATH`. Best suited for code-generation tasks on OpenAI's infrastructure.
+</ParamField>
+
+## Choosing models: the core tradeoff
+
+The fundamental tradeoff is **cost and speed vs. reasoning quality**:
+
+- **Cheap, fast models** (DeepSeek Chat, Haiku) handle mechanical tasks well: generating boilerplate, writing documentation, scaffolding files from a template, applying consistent formatting. These tasks have a clear correct answer and don't require architectural judgment.
+- **Capable models** (Claude Opus, GPT-4o) are worth the extra cost for tasks that require understanding trade-offs, maintaining consistency across a large codebase, or producing architecture that other tasks will depend on. A bad plan that gets executed across 10 downstream tasks costs far more to fix than the delta in API cost.
+
+A good default strategy: use a capable model for `plan`-class tasks and the QA role, and use a cheap model for everything else. The config examples below show this pattern.
+
+## Example configurations
+
+<Tabs>
+  <Tab title="Budget setup">
+    Routes everything through DeepSeek via OpenRouter. Best for greenfield projects with well-specified tasks, rapid prototyping, or tasks with strong deterministic checks that catch errors early.
+
+    ```yaml
+    config_version: 1
+    executorEngine: external
+
+    models:
+      planner:
+        provider: openrouter
+        model: deepseek/deepseek-v4-flash
+      executor_heavy:
+        provider: openrouter
+        model: deepseek/deepseek-v4-flash
+      executor_light:
+        provider: openrouter
+        model: deepseek/deepseek-chat       # Fastest, cheapest variant
+      default:
+        provider: openrouter
+        model: deepseek/deepseek-v4-flash
+      qa:
+        provider: openrouter
+        model: anthropic/claude-haiku-4-5   # Small upgrade for QA accuracy
+
+    agentic:
+      maxIterations: 25
+    ```
+
+    Estimated cost per task: roughly $0.001–$0.01 for most coding tasks. Every `task run` makes at least 2 LLM calls (execute + QA); retries add 2 more calls each.
+  </Tab>
+  <Tab title="Quality setup">
+    Uses Claude for planning and QA — the two roles where instruction-following and judgment matter most — and keeps DeepSeek for execution. A practical balance for production projects or brownfield codebases where getting the architecture right on the first attempt saves money overall.
+
+    ```yaml
+    config_version: 1
+    executorEngine: external
+
+    models:
+      planner:
+        provider: anthropic
+        model: claude-opus-4-8              # Best for architectural decisions
+      executor_heavy:
+        provider: openrouter
+        model: deepseek/deepseek-v4-flash   # Fix/implement — capable enough
+      executor_light:
+        provider: openrouter
+        model: deepseek/deepseek-chat       # Doc/review — fast and cheap
+      default:
+        provider: openrouter
+        model: deepseek/deepseek-v4-flash
+      qa:
+        provider: anthropic
+        model: claude-opus-4-8              # Strict QA with full reasoning
+
+    agentic:
+      maxIterations: 25
+    ```
+
+    Estimated cost per task: roughly $0.01–$0.10 for complex tasks, depending on file sizes and retry count.
+  </Tab>
+</Tabs>
+
+<Accordion title="Previewing model routing before running">
+  Before spending any tokens, you can inspect exactly which model OrchestOS would choose for each pending task:
+
+  ```bash
+  # See active config and per-task model routing
+  orchestos config show ./my-project
+
+  # Dry-run a specific task — shows model, provider, suggested context files, no LLM call
+  orchestos task run ./my-project --explain <task-id>
+  ```
+
+  `--explain` is a zero-cost operation: it classifies the task, resolves the model, runs the graph suggestion for `input[]`, and prints everything to stdout without making any LLM calls.
+</Accordion>
+
+<Accordion title="Model IDs by provider">
+  A quick reference for common model IDs used in OrchestOS configs:
+
+  **OpenRouter** (`provider: openrouter`):
+  - `anthropic/claude-sonnet-5`
+  - `anthropic/claude-haiku-4-5`
+  - `deepseek/deepseek-v4-flash`
+  - `deepseek/deepseek-chat`
+  - `openai/gpt-4o`
+  - `openai/gpt-4o-mini`
+  - `google/gemini-2.5-flash`
+
+  **Anthropic** (`provider: anthropic`):
+  - `claude-opus-4-8`
+  - `claude-sonnet-5`
+
+  **OpenAI** (`provider: openai`):
+  - `gpt-4o`
+  - `gpt-4o-mini`
+
+  Full OpenRouter model catalog: [openrouter.ai/models](https://openrouter.ai/models)
+</Accordion>

@@ -1,0 +1,179 @@
+---
+title: "orchestos.config.yaml — OrchestOS Configuration File"
+sidebarTitle: "Config File"
+description: "All orchestos.config.yaml fields explained — model routing per role, executor engine, agentic iteration limits, and the requireSpec workflow gate."
+---
+
+`orchestos.config.yaml` lives at the root of your project and controls how OrchestOS routes tasks to models, which executor engine to use, how many agentic iterations to allow, and whether specs must be approved before a task can run. If the file is absent, OrchestOS uses built-in defaults for every setting. You only need to create it when you want to override those defaults.
+
+## Initializing and inspecting config
+
+```bash
+# Scaffold orchestos.config.yaml in your project directory
+orchestos config init ./my-project
+
+# Show the active config and which model would be used for each pending task
+orchestos config show ./my-project
+```
+
+`config init` writes a ready-to-edit YAML file with all fields populated with sensible defaults. `config show` prints the resolved config alongside a per-task model routing preview so you can verify the setup before running anything.
+
+---
+
+## Fields
+
+<ParamField path="config_version" type="integer" required>
+  Schema version. Always `1`. OrchestOS rejects config files with an unrecognised version.
+</ParamField>
+
+<ParamField path="executorEngine" type="string" default="external">
+  Controls which executor backend runs each task. Accepted values:
+
+  - `external` — uses the Claude binary or OpenCode binary installed on your machine (default)
+  - `internal` — uses OrchestOS's built-in OpenRouter/Anthropic/OpenAI client directly
+
+  Most users should leave this as `external` unless they are working in an environment where external binaries are unavailable.
+</ParamField>
+
+<ParamField path="models.planner" type="object">
+  Model used for `plan`-class tasks and sub-agent planning. Accepts a `provider` string and a `model` string.
+
+  ```yaml
+  models:
+    planner:
+      provider: openrouter
+      model: anthropic/claude-haiku-4-5
+  ```
+</ParamField>
+
+<ParamField path="models.executor_heavy" type="object">
+  Model used for `fix` and `refactor` task classes — tasks that require deeper reasoning or understanding of existing code. Accepts a `provider` and `model`.
+
+  ```yaml
+  models:
+    executor_heavy:
+      provider: openrouter
+      model: deepseek/deepseek-v4-flash
+  ```
+</ParamField>
+
+<ParamField path="models.executor_light" type="object">
+  Model used for `generate`, `edit`, and `doc` task classes — mechanical or low-complexity tasks where a cheaper, faster model is sufficient. Accepts a `provider` and `model`.
+
+  ```yaml
+  models:
+    executor_light:
+      provider: openrouter
+      model: deepseek/deepseek-v4-flash
+  ```
+</ParamField>
+
+<ParamField path="models.default" type="object">
+  Fallback model when the task class does not match any routing rule. Accepts a `provider` and `model`.
+
+  ```yaml
+  models:
+    default:
+      provider: openrouter
+      model: deepseek/deepseek-v4-flash
+  ```
+</ParamField>
+
+<ParamField path="models.qa" type="object">
+  Model used for the QA evaluation call that validates `acceptance_criteria` after each task run. Accepts a `provider` and `model`. A capable but cost-efficient model (such as Claude Haiku) works well here because QA prompts are structured and relatively short.
+
+  ```yaml
+  models:
+    qa:
+      provider: openrouter
+      model: anthropic/claude-haiku-4-5
+  ```
+</ParamField>
+
+<ParamField path="agentic.maxIterations" type="integer" default="25">
+  Maximum number of agentic iterations allowed per task run. An iteration is one execute → check → QA cycle. Increase this value for complex tasks that may need more attempts, or lower it to cap token spend. The absolute hard cap for `--graph` runs is 200 iterations regardless of this setting.
+</ParamField>
+
+<ParamField path="requireSpec" type="boolean" default="false">
+  When `true`, OrchestOS blocks task execution until a spec for that task has been created and approved with `orchestos spec approve <task-id>`. This enforces a spec-driven workflow where every task must have documented WHEN/THEN acceptance criteria before any LLM call is made.
+
+  ```yaml
+  requireSpec: true
+  ```
+
+  See the [Spec-Driven flow in the CLI reference](/reference/cli) for the full workflow.
+</ParamField>
+
+---
+
+## Complete example
+
+The following is the default config scaffolded by `orchestos config init`, using OpenRouter for all roles to keep API key management simple.
+
+```yaml
+config_version: 1
+executorEngine: external
+
+models:
+  planner:
+    provider: openrouter
+    model: anthropic/claude-haiku-4-5   # Fast, cheap — good for planning
+  executor_heavy:
+    provider: openrouter
+    model: deepseek/deepseek-v4-flash   # Fix and refactor tasks
+  executor_light:
+    provider: openrouter
+    model: deepseek/deepseek-v4-flash   # Generate, edit, doc tasks
+  default:
+    provider: openrouter
+    model: deepseek/deepseek-v4-flash   # Fallback for unclassified tasks
+  qa:
+    provider: openrouter
+    model: anthropic/claude-haiku-4-5   # QA call — structured, efficient
+
+agentic:
+  maxIterations: 25
+```
+
+<Accordion title="Mixing providers across roles">
+  You can mix providers freely. For example, use Anthropic directly for planning and QA (where instruction-following matters most) while routing mechanical execution tasks through OpenRouter's cheaper models:
+
+  ```yaml
+  config_version: 1
+  executorEngine: external
+
+  models:
+    planner:
+      provider: anthropic
+      model: claude-opus-4-8            # Direct Anthropic — best for architecture
+    executor_heavy:
+      provider: openrouter
+      model: deepseek/deepseek-v4-flash
+    executor_light:
+      provider: openrouter
+      model: deepseek/deepseek-chat     # Fastest, cheapest
+    default:
+      provider: openrouter
+      model: deepseek/deepseek-v4-flash
+    qa:
+      provider: anthropic
+      model: claude-opus-4-8            # Strict QA with capable model
+  ```
+
+  Remember: a per-task `executor` or `executor_model` field in `tasks.yaml` always takes precedence over anything in `orchestos.config.yaml`.
+</Accordion>
+
+<Accordion title="Setting API keys">
+  OrchestOS reads API keys from `~/.orchestos/.env`. You do not need a separate key for every provider — OpenRouter covers Claude, GPT-4o, Gemini, and DeepSeek under a single `OPENROUTER_API_KEY`.
+
+  ```bash
+  mkdir -p ~/.orchestos
+  cat > ~/.orchestos/.env <<EOF
+  OPENROUTER_API_KEY=sk-or-...
+  ANTHROPIC_API_KEY=sk-ant-...    # Only needed if provider: anthropic is set
+  OPENAI_API_KEY=sk-...           # Needed for embeddings or provider: openai
+  EOF
+  ```
+
+  Key prefix reference: OpenRouter keys start with `sk-or-`, Anthropic keys start with `sk-ant-`, OpenAI keys start with `sk-`.
+</Accordion>

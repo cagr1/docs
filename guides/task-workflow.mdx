@@ -1,0 +1,263 @@
+---
+title: "Running LLM Coding Tasks End-to-End with OrchestOS"
+sidebarTitle: "Task Workflow"
+description: "Learn how to scaffold, define, preview, run, and diagnose LLM-powered coding tasks using the orchestos task CLI from start to finish."
+---
+
+Every task in OrchestOS follows a predictable lifecycle: you declare what should be built in `tasks.yaml`, optionally dry-run the plan to confirm context, kick off the LLM run, then check results or diagnose failures. The CLI handles sandboxing, deterministic checks, and QA automatically — your job is to write good task definitions.
+
+## Setting up your task list
+
+<Steps>
+
+### Scaffold tasks.yaml
+
+Run `task init` inside your project directory to generate a starter `tasks.yaml`:
+
+```bash
+orchestos task init ./my-project
+```
+
+This creates a `tasks.yaml` at the project root with a commented template. Open it and start replacing the placeholder task.
+
+### Define a task
+
+Each task entry in `tasks.yaml` requires at minimum an `id`, a `description`, and an `output[]` list — the exact files the LLM is allowed to write. Anything outside `output[]` is blocked at the contract layer.
+
+```yaml
+version: 1
+project: my-project
+tasks:
+  - id: add-button
+    description: "Create a reusable Button component with hover and disabled states"
+    executor: anthropic
+    skill: tdd-enforcer
+    input:
+      - src/styles/tokens.css
+    output:
+      - src/components/Button.tsx
+      - src/components/Button.module.css
+    depends_on: []
+    checks:
+      - cmd: "bun run typecheck"
+      - cmd: "bun test src/components"
+    acceptance_criteria:
+      - "WHEN Button receives disabled=true THEN cursor-not-allowed and opacity-50 are applied"
+      - "WHEN onClick is triggered THEN it is not called while disabled=true"
+    status: pending
+    retry_count: 0
+```
+
+<Tip>
+Omit `input[]` to let OrchestOS auto-suggest relevant files using the code graph. Run `orchestos context suggest "<task description>"` to preview what it would pick.
+</Tip>
+
+### Preview with `--explain` (dry run)
+
+Before spending any tokens, use `--explain` to see exactly what context the harness would inject — no LLM call is made:
+
+```bash
+orchestos task run ./my-project --explain add-button
+```
+
+The output shows the full prompt plan, suggested input files, skill guidelines, and instincts that would be applied. Use this to catch missing context or overly broad `output[]` declarations before running.
+
+### Clarify before running (optional)
+
+If a task description is ambiguous, use `--clarify` to review the task and optionally append a clarification before the run starts:
+
+```bash
+orchestos task run ./my-project --clarify add-button
+```
+
+OrchestOS prints the task summary, flags any detected ambiguity, then prompts you for additional context. Press Enter to run as-is, or type a clarification that gets appended to the task description before the LLM call.
+
+### Run the task
+
+Execute the next pending task in your list:
+
+```bash
+orchestos task run ./my-project
+```
+
+Or target a specific task by ID:
+
+```bash
+orchestos task run ./my-project --id add-button
+```
+
+The run goes through the full middleware chain: spec gate → sandbox worktree setup → model routing → memory fetch → skill injection → prompt build → LLM call → contract check → deterministic checks → QA call → merge or revert.
+
+<Note>
+Every run is isolated in a git worktree. If QA fails, the worktree is discarded and nothing lands on your main branch.
+</Note>
+
+### Check task status
+
+After a run completes (or fails), inspect the status table:
+
+```bash
+orchestos task status ./my-project
+```
+
+Example output:
+
+```text
+id            status            retry  qa       cost
+──────────────────────────────────────────────────────
+add-button    done              0      pass     $0.031
+auth-flow     pending           0      —        —
+data-table    failed_permanent  3      fail     $0.089
+```
+
+For a deeper look at a specific run (tokens, cost breakdown, context warnings, files written):
+
+```bash
+orchestos runs --detail <run-id>
+```
+
+### Diagnose a failed task
+
+When a task reaches `failed_permanent` (three consecutive QA failures), the diagnosis agent runs automatically. You can also trigger it manually:
+
+```bash
+orchestos task diagnose <task-id>
+```
+
+The agent reads the last three runs, classifies the failure pattern using Haiku, and returns a structured suggestion:
+
+| Pattern | Example suggestion |
+|---|---|
+| `deterministic_check` | TypeScript errors in output — check import paths |
+| `qa_specific_criterion` | Criterion 3 fails consistently — narrow output scope |
+| `parse_error` | Model returned malformed output — add format instruction |
+| `scope_creep` | 20+ files suggested — add explicit `input[]` to constrain context |
+
+### Run all tasks in dependency order
+
+To run every pending task, respecting `depends_on[]` declarations:
+
+```bash
+orchestos task run ./my-project --all
+```
+
+OrchestOS resolves a topological order from your dependency graph and executes tasks sequentially. If a task fails permanently, its dependents are skipped automatically.
+
+</Steps>
+
+---
+
+## WHEN/THEN acceptance criteria
+
+Acceptance criteria are evaluated one by one by a second QA LLM after the deterministic checks pass. Writing them in WHEN/THEN format makes each criterion precise, observable, and unambiguous for the QA model.
+
+The format is:
+
+```text
+WHEN <observable condition or trigger> THEN <expected result>
+```
+
+```yaml
+acceptance_criteria:
+  - "WHEN user submits empty form THEN a validation error is shown below the field"
+  - "WHEN token expires THEN the user is redirected to /login"
+  - "WHEN Button receives disabled=true THEN cursor-not-allowed and opacity-50 are applied"
+  - "WHEN onClick is triggered on a disabled Button THEN the handler is not called"
+```
+
+<Note>
+The QA LLM evaluates each criterion independently. A single failing criterion causes the entire task to fail and files to be reverted. Be specific — vague criteria like "works correctly" produce inconsistent QA verdicts.
+</Note>
+
+Multi-line form is also valid for longer conditions:
+
+```yaml
+acceptance_criteria:
+  - |
+    WHEN a user with role=viewer attempts to delete a record
+    THEN a 403 response is returned with body { error: 'forbidden' }
+```
+
+Use `orchestos spec lint <task-id>` to validate that all criteria in a spec use WHEN/THEN format before approving. Free-form strings like "La función debe retornar X" are flagged and a suggested rewrite is shown.
+
+---
+
+## Deterministic checks
+
+Deterministic checks are shell commands that run **before** the QA LLM. The first check that fails immediately reverts the generated files and retries — no QA tokens are spent on output that doesn't even typecheck.
+
+```yaml
+checks:
+  - cmd: "bun run typecheck"
+  - cmd: "bun test src/components"
+  - cmd: "grep -r 'TODO' src/components/Button.tsx"
+    expect_exit: 1        # grep exits 1 when nothing is found — confirms no TODOs
+    timeout_ms: 30000
+```
+
+<CardGroup cols={3}>
+  <Card title="cmd" icon="terminal">
+    The shell command to run. Executed from the project root inside the sandbox worktree.
+  </Card>
+  <Card title="expect_exit" icon="check">
+    Expected exit code. Defaults to `0`. Set to `1` for commands like `grep` where a non-zero exit signals the desired state.
+  </Card>
+  <Card title="timeout_ms" icon="clock">
+    Milliseconds before the check is killed and treated as a failure. Defaults to `10000` (10 seconds).
+  </Card>
+</CardGroup>
+
+<Warning>
+Checks run inside the sandbox worktree, not your main branch. They have access to the generated files but not to uncommitted changes outside the declared `output[]`.
+</Warning>
+
+---
+
+## Full field reference
+
+<Accordion title="tasks.yaml — all supported fields">
+
+```yaml
+- id: add-button                     # unique identifier (kebab-case)
+  description: "..."                 # task brief sent to the LLM
+  executor: openrouter               # openrouter | anthropic | openai | codex
+  planner_model: claude-opus-4-8     # optional per-task model override
+  executor_model: deepseek-v4-flash  # optional per-task model override
+  skill: tdd-enforcer                # optional: inject skill guidelines into prompt
+  input:                             # files the LLM may read (omit to use graph suggestion)
+    - src/styles/tokens.css
+  output:                            # REQUIRED: the only files the LLM may write
+    - src/components/Button.tsx
+  depends_on: [other-task-id]        # task IDs that must complete before this one runs
+  checks:                            # deterministic shell commands (run before QA)
+    - cmd: "bun run typecheck"
+      expect_exit: 0                 # default 0
+      timeout_ms: 30000              # default 10000
+  acceptance_criteria:               # evaluated per-item by QA LLM
+    - "WHEN disabled=true THEN onClick is not called"
+  status: pending                    # managed by orchestos — do not edit manually
+  retry_count: 0                     # managed by orchestos — do not edit manually
+```
+
+`status` and `retry_count` are written by the CLI after each run. Edit everything else freely between runs.
+
+</Accordion>
+
+<Accordion title="Executor routing — which LLM runs which task">
+
+You can route different tasks to different providers. Use `executor` for provider-level routing and `executor_model` for model-level overrides:
+
+```yaml
+- id: design-api-interface
+  executor: anthropic          # Claude — architectural decisions
+  output: [docs/api-auth.md]
+
+- id: scaffold-endpoints
+  executor: openrouter         # DeepSeek via OpenRouter — mechanical, cheaper
+  depends_on: [design-api-interface]
+  output: [src/routes/auth.ts]
+```
+
+Project-wide model defaults live in `orchestos.config.yaml`. A per-task `executor` always wins over config-level defaults.
+
+</Accordion>

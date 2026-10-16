@@ -1,0 +1,213 @@
+---
+title: "Sub-Agents: Decompose Plans Into Ordered Sub-Tasks"
+sidebarTitle: "Sub-Agents"
+description: "Sub-agents split a plan task into isolated, dependency-ordered sub-tasks — each with its own worktree, context slice, and QA verdict."
+---
+
+When a feature is too large or too multi-faceted for a single task, sub-agents let you hand OrchestOS a high-level plan and watch it decompose the work automatically. A "plan" task generates a structured `.plan.yaml` file via LLM; OrchestOS then validates the plan, resolves the execution order from the dependency graph, and runs each sub-task in its own isolated git worktree. If any sub-task fails, its dependents are automatically skipped — no partial state leaks downstream.
+
+## How to trigger sub-agent expansion
+
+```bash
+orchestos task run . --expand <plan-task-id>
+```
+
+The `--expand` flag tells the scheduler to treat the named task as a plan task. Instead of running a single LLM call and writing files directly, OrchestOS generates a `.plan.yaml`, validates it, and then executes each sub-task in topological order.
+
+<Note>
+The plan task itself must exist in your `tasks.yaml`. Its `description` becomes the prompt sent to the planner model. You do not need to pre-write the `.plan.yaml` — OrchestOS generates it.
+</Note>
+
+## The expansion flow
+
+<Steps>
+  <Step title="Parent task generates a .plan.yaml">
+    OrchestOS calls the planner model (configured in `orchestos.config.yaml` under `models.planner`) with the parent task's description. The planner uses function calling when the provider supports it, or falls back to prompting for a YAML block.
+
+    The resulting plan looks like this:
+
+    ```yaml
+    version: 1
+    parent_task_id: add-checkout-flow
+    sub_tasks:
+      - id: design-cart-schema
+        description: "Define the CartItem and Order types in src/types/cart.ts"
+        acceptance:
+          - "WHEN CartItem is imported THEN it has productId, quantity, and unitPrice fields"
+        depends_on: []
+        allowed_tools: [read, write]
+        output:
+          - src/types/cart.ts
+
+      - id: build-cart-service
+        description: "Implement addToCart, removeFromCart, and clearCart in src/services/cart.ts"
+        acceptance:
+          - "WHEN addToCart is called with a duplicate productId THEN it increments quantity"
+        depends_on: [design-cart-schema]
+        allowed_tools: [read, write, edit]
+        output:
+          - src/services/cart.ts
+
+      - id: wire-checkout-route
+        description: "Create the POST /checkout route that validates the cart and creates an order"
+        acceptance:
+          - "WHEN cart is empty THEN route returns 400 with a descriptive error"
+        depends_on: [build-cart-service]
+        allowed_tools: [read, write, edit]
+        output:
+          - src/routes/checkout.ts
+    ```
+  </Step>
+
+  <Step title="Planner validates the plan">
+    Before any sub-task executes, OrchestOS validates the generated plan:
+
+    - All sub-task IDs are unique and in kebab-case.
+    - All `depends_on` references point to IDs that exist in the plan.
+    - The dependency graph is a valid DAG — no cycles.
+    - Each sub-task has at least one `acceptance` criterion and either an `output` list or a `topic_key`.
+
+    If validation fails, OrchestOS reports the error and stops — no LLM tokens are spent on an invalid plan.
+  </Step>
+
+  <Step title="Scheduler executes in topological order">
+    OrchestOS resolves the topological order from `depends_on` relationships and runs each sub-task sequentially. Sub-tasks with no dependencies run first; downstream ones wait for their dependencies to complete.
+
+    Each sub-task gets:
+    - Its own isolated git worktree branched from the current base branch.
+    - A context slice built from `CONTEXT.md` filtered to files relevant to its dependencies.
+    - Memory entries scoped to its `topic_key` and the `topic_key`s of its dependencies.
+  </Step>
+
+  <Step title="Cascade QA: failures propagate downstream">
+    When a sub-task fails its QA check (or times out), OrchestOS marks all sub-tasks that `depends_on` it — directly or transitively — as `skipped`. The reason is recorded: `dependency failed: <id>`.
+
+    ```text
+    design-cart-schema   → completed ✅
+    build-cart-service   → failed ❌
+    wire-checkout-route  → skipped (dependency failed: build-cart-service)
+    ```
+
+    On success, the sub-task's worktree is merged back with a fast-forward commit: `orchestos(sub-<id>): sub-task completed`. On failure or skip, the worktree is discarded — nothing partial reaches the main branch.
+  </Step>
+</Steps>
+
+## Context isolation
+
+Each sub-agent does not receive the full `CONTEXT.md`. Instead, OrchestOS computes a context slice for each sub-task:
+
+- **File context**: files referenced in the sub-task's `input[]`, plus files referenced by its dependencies' `output[]`.
+- **Memory context**: memory entries stored under the sub-task's own `topic_key` and the `topic_key`s listed in `depends_on`.
+
+This keeps each sub-agent's prompt focused and prevents earlier sub-tasks from polluting the context of unrelated later ones.
+
+## Memory passing between sub-agents
+
+Sub-agents share state through a `topic_key`-based memory layer backed by SQLite. When a sub-task completes, its result is written to `memory_entries` under its `topic_key` using **MERGE semantics** — re-running a sub-agent updates the existing entry rather than creating a duplicate.
+
+```text
+design-cart-schema  → writes memory["cart-schema-types"]
+build-cart-service  → reads  memory["cart-schema-types"] (via depends_on)
+                    → writes memory["cart-service-impl"]
+wire-checkout-route → reads  memory["cart-service-impl"] (via depends_on)
+```
+
+<Tip>
+Set a meaningful `topic_key` on each sub-task. It becomes the stable identifier downstream sub-agents use to read your output. If two sub-tasks share the same `topic_key`, the second run merges into the first — useful for incremental refinement, but worth being intentional about.
+</Tip>
+
+## Memory conflict detection
+
+When multiple sub-agents write to overlapping memory entries, OrchestOS runs conflict detection automatically:
+
+1. BM25 full-text search finds candidate pairs with similar content.
+2. A Haiku model classifies the relationship between each pair:
+
+| Classification | Meaning |
+|---|---|
+| `conflict_with` | The two entries directly contradict each other |
+| `supersedes` | One entry replaces the other |
+| `compatible` | Both can coexist — no action needed |
+| `scoped` | They address different scopes of the same topic |
+| `related` | Thematically connected but not conflicting |
+| `not_conflict` | Unrelated entries that happened to match the search |
+
+Detected conflicts are surfaced via:
+
+```bash
+orchestos memory conflicts
+orchestos memory conflicts --project ./my-project
+```
+
+Resolve conflicts by reviewing the flagged entries and re-running the relevant sub-task with a more specific `topic_key`.
+
+## Viewing sub-agent results
+
+After expansion completes, OrchestOS prints a summary table:
+
+```text
+SUB-TASK              STATUS     COST       TOKENS    QA
+design-cart-schema    completed  $0.0041    1,240     pass
+build-cart-service    failed     $0.0089    2,780     fail
+wire-checkout-route   skipped    —          —         —
+```
+
+For full evidence on any individual sub-task run:
+
+```bash
+orchestos runs --detail <run-id>
+```
+
+The `/runs` view in the dashboard shows cost breakdown per sub-agent, context monitor warnings, and QA verdicts all in one place.
+
+## How the plan pipeline works
+
+<CardGroup cols={2}>
+  <Card title="Plan generation" icon="sitemap" href="/guides/sub-agents">
+    The planner model receives the parent task description and returns sub-tasks via function calling or a YAML block. Sub-tasks are sorted into topological order before execution begins.
+  </Card>
+  <Card title="Validation" icon="shield-check" href="/guides/sub-agents">
+    Every plan is checked for unique IDs, valid `depends_on` references, no dependency cycles, and the presence of at least one acceptance criterion per sub-task. Invalid plans are rejected before any tokens are spent on execution.
+  </Card>
+  <Card title="Context isolation" icon="filter" href="/concepts/sandbox">
+    Each sub-task receives only the context its dependency chain needs — a slice of `CONTEXT.md` and memory entries scoped to its `topic_key`. This keeps prompts focused and prevents cross-contamination between sub-tasks.
+  </Card>
+  <Card title="Cascade QA" icon="list-check" href="/guides/task-workflow">
+    When a sub-task fails, all downstream dependents are marked `skipped` automatically. Nothing partial merges to the main branch — each sub-task either fully passes QA or its worktree is discarded.
+  </Card>
+</CardGroup>
+
+## Practical example: expanding a checkout feature
+
+Suppose you have this task in `tasks.yaml`:
+
+```yaml
+- id: add-checkout-flow
+  description: >
+    Implement the full checkout flow: cart types, cart service,
+    and the POST /checkout route. Use the existing Order model
+    in src/db/models/order.ts.
+  output:
+    - src/types/cart.ts
+    - src/services/cart.ts
+    - src/routes/checkout.ts
+  depends_on: [setup-order-model]
+  status: pending
+```
+
+Run the expansion:
+
+```bash
+orchestos task run . --expand add-checkout-flow
+```
+
+OrchestOS will:
+1. Send `add-checkout-flow`'s description to the planner model.
+2. Generate and save `add-checkout-flow.plan.yaml`.
+3. Validate the plan (unique IDs, DAG check, schema).
+4. Execute each sub-task in dependency order, each in its own worktree.
+5. Report the result table with per-sub-agent cost, tokens, and QA verdict.
+
+<Warning>
+Sub-agents run sequentially, not in parallel. A plan with many deep dependencies will take longer than a flat plan of the same total work. Keep plans focused — if a plan generates more than 6–8 sub-tasks, consider splitting the parent task instead.
+</Warning>

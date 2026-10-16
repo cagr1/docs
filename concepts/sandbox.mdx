@@ -1,0 +1,155 @@
+---
+title: "Sandbox: Isolated Git Worktrees for Safe Task Execution"
+sidebarTitle: "Sandbox"
+description: "Learn how OrchestOS uses isolated git worktrees for every task run, ensuring failures never leave partial or broken writes on your main branch."
+---
+
+Every task in OrchestOS runs inside an isolated git worktree — a separate checkout of your repository that shares the object store with your main branch but has its own working directory. The LLM writes files, checks run, and the QA LLM evaluates the result, all inside that worktree. Only when every gate passes does OrchestOS fast-forward-merge the worktree branch back to your main branch. If anything fails — a contract violation, a failed typecheck, a rejected acceptance criterion — the worktree is discarded. Your main branch never sees a partial result.
+
+## How the worktree is created
+
+When OrchestOS starts a task, it sets up an isolated sandbox before any LLM call is made. It:
+
+1. Verifies the project is a git repository.
+2. Creates a new branch named `orchestos/<task-id>/<timestamp>` from your base branch.
+3. Adds a worktree at `.orchestos/worktrees/<task-id>-<timestamp>` pointing to that branch.
+4. Directs all subsequent file operations — context loading, LLM writes, and checks — to that worktree path.
+
+Your working directory is never touched until the merge step.
+
+## End-to-end flow
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                          TASK START                             │
+│  tasks.yaml declares output[], checks[], acceptance_criteria[]  │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                               ▼
+                 ┌─────────────────────────┐
+                 │  git worktree created   │
+                 │  branch: orchestos/<id> │
+                 │  isolated from main     │
+                 └────────────┬────────────┘
+                              │
+                              ▼
+                 ┌─────────────────────────┐
+                 │  snapshot_before taken  │
+                 │  (SHA-1 hash per file)  │
+                 └────────────┬────────────┘
+                              │
+                              ▼
+                 ┌─────────────────────────┐
+                 │      LLM call           │
+                 │  writes files inside    │
+                 │  worktree only          │
+                 └────────────┬────────────┘
+                              │
+                              ▼
+                 ┌─────────────────────────┐
+                 │   contract check        │◄── any write outside output[]?
+                 │   output[] enforced     │         │
+                 └────────────┬────────────┘         │ VIOLATION
+                              │ PASS                 ▼
+                              │            ┌──────────────────────┐
+                              │            │  worktree discarded  │
+                              │            │  task → failed       │
+                              │            └──────────────────────┘
+                              ▼
+                 ┌─────────────────────────┐
+                 │  deterministic checks   │◄── typecheck / tests fail?
+                 │  checks[] shell cmds    │         │
+                 └────────────┬────────────┘         │ FAIL
+                              │ PASS                 ▼
+                              │            ┌──────────────────────┐
+                              │            │  files reverted      │
+                              │            │  task → retry        │
+                              │            └──────────────────────┘
+                              ▼
+                 ┌─────────────────────────┐
+                 │     QA LLM call         │◄── acceptance_criteria fail?
+                 │  evaluates each         │         │
+                 │  acceptance criterion   │         │ FAIL
+                 └────────────┬────────────┘         ▼
+                              │ PASS       ┌──────────────────────┐
+                              │            │  files reverted      │
+                              │            │  task → retry/perm   │
+                              │            └──────────────────────┘
+                              ▼
+                 ┌─────────────────────────┐
+                 │  snapshot_after taken   │
+                 │  merge --ff-only        │
+                 │  to base branch         │
+                 └────────────┬────────────┘
+                              │
+                              ▼
+                 ┌─────────────────────────┐
+                 │  worktree cleaned up    │
+                 │  task → done            │
+                 └─────────────────────────┘
+```
+
+## Merge strategy
+
+On QA pass, OrchestOS merges using `--ff-only` (fast-forward only). This keeps the history linear — the worktree's commits appear directly on the base branch with no merge commit. If the base branch has diverged since the worktree was created, OrchestOS attempts a rebase of the worktree branch before retrying the fast-forward merge.
+
+On any failure, the worktree directory is removed and the branch is deleted. No uncommitted state escapes.
+
+## Snapshot evidence
+
+Before the LLM writes anything, OrchestOS takes a `snapshot_before`: a SHA-1 hash of every file in `output[]` (or `'absent'` if the file does not yet exist). After a successful QA pass it takes a `snapshot_after`. Both snapshots are stored in the SQLite run record.
+
+This gives you a complete audit trail:
+
+- You can verify that a specific file was changed by a specific task.
+- You can detect if a file was touched by something outside OrchestOS between runs.
+- `orchestos runs --detail <run-id>` shows the before/after snapshot and the full file diff.
+
+## Debugging failures with --keep-worktree
+
+By default a failed worktree is discarded immediately. To inspect the state after a failure — for example to understand why a typecheck failed — pass `--keep-worktree`:
+
+```bash
+orchestos task run ./my-project --id add-button --keep-worktree
+```
+
+The worktree and its branch remain at `.orchestos/worktrees/<task-id>-<timestamp>` until you clean them up manually. You can navigate to the directory, inspect the files the LLM wrote, and run the failing check yourself.
+
+<Warning>
+  Worktrees kept with `--keep-worktree` are not cleaned up automatically. Run `git worktree list` to see all active worktrees, and `git worktree remove --force <path>` followed by `git branch -D <branch>` to clean up manually.
+</Warning>
+
+## Why this matters
+
+<CardGroup cols={2}>
+  <Card title="No partial writes" icon="shield-check" href="/concepts/contracts">
+    A failed task leaves your main branch exactly as it was before the run started. There is no such thing as a half-applied change from an OrchestOS task.
+  </Card>
+  <Card title="Safe parallelism" icon="code-branch" href="/guides/sub-agents">
+    Sub-agent plans run each sub-task in its own worktree. Branches are serialized through a git lock before merging, so concurrent tasks never corrupt each other's history.
+  </Card>
+  <Card title="Auditable history" icon="clock-rotate-left" href="/guides/dashboard">
+    Every successful task produces a clean commit on your base branch with a message like `orchestos: changes from orchestos/add-button/1718000000000`. The worktree branch name is the run trace.
+  </Card>
+  <Card title="Debuggable failures" icon="bug" href="/reference/troubleshooting">
+    Use `--keep-worktree` to preserve the exact file state the LLM produced. You can reproduce any check failure without re-running the LLM.
+  </Card>
+</CardGroup>
+
+## Sandbox and git requirements
+
+OrchestOS requires that your project is a git repository before any task can run. The sandbox setup checks for a `.git` directory and fails fast with a clear error if it is not found.
+
+```bash
+# Initialize git if you haven't already
+git init ./my-project
+git -C ./my-project add -A
+git -C ./my-project commit -m "initial commit"
+
+# Then initialize OrchestOS
+orchestos init ./my-project
+```
+
+<Note>
+  OrchestOS always creates the worktree from your **current** base branch at the moment the task starts. Make sure your base branch is clean and up to date before running `orchestos task run`.
+</Note>

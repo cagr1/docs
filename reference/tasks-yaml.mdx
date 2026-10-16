@@ -1,0 +1,188 @@
+---
+title: "tasks.yaml Field Reference — OrchestOS Task Declarations"
+sidebarTitle: "tasks.yaml"
+description: "Every tasks.yaml field explained — per-task options, checks[], acceptance_criteria[], managed fields, and a complete annotated example."
+---
+
+Every OrchestOS project is driven by a `tasks.yaml` file that declares exactly what each task should do, which files it may write, which tasks must complete first, and how success is measured. OrchestOS reads this file before each run, enforces the declared file contract, and writes results back to the same file. You define the contract; OrchestOS does the execution.
+
+## Top-level fields
+
+<ParamField path="version" type="integer" required>
+  Schema version. Always `1`.
+</ParamField>
+
+<ParamField path="project" type="string" required>
+  The name of your project. Displayed in `orchestos task status` and stored in SQLite alongside every run record.
+</ParamField>
+
+<ParamField path="tasks" type="array" required>
+  Ordered list of task objects. OrchestOS picks the next `pending` task whose `depends_on` dependencies are all `done`.
+</ParamField>
+
+---
+
+## Per-task fields
+
+Each entry in `tasks[]` supports the following fields.
+
+<ParamField path="id" type="string" required>
+  Unique identifier in kebab-case (e.g. `add-auth-middleware`). Referenced by `depends_on` in other tasks, by `orchestos task run --id`, and in all run records.
+</ParamField>
+
+<ParamField path="description" type="string" required>
+  The task brief sent to the LLM. Write this as a clear, actionable instruction. The more specific you are about the expected output, the more reliable the result. You can append a user clarification to this field with `orchestos task run --clarify <id>`.
+</ParamField>
+
+<ParamField path="executor" type="string" default="openrouter">
+  The provider used to execute this task. Accepted values: `openrouter`, `anthropic`, `openai`, `codex`. A per-task `executor` always wins over the model routing configured in `orchestos.config.yaml`. See [Model Routing](/reference/models) for details.
+</ParamField>
+
+<ParamField path="planner_model" type="string">
+  Optional per-task model override for the planner role. Useful when a specific task needs a more capable planning model without changing the global config. Example: `claude-opus-4-8`.
+</ParamField>
+
+<ParamField path="executor_model" type="string">
+  Optional per-task model override for the executor role. Overrides the model that would otherwise be selected by the router. Example: `anthropic/claude-sonnet-5`.
+</ParamField>
+
+<ParamField path="skill" type="string">
+  Optional skill ID to inject as guidelines into the task prompt. Skills define language-specific verifiers, anti-patterns, and instructions. Run `orchestos skill list` to see available skills. Example: `frontend-design`.
+</ParamField>
+
+<ParamField path="input" type="string[]">
+  Array of file paths the LLM may read as context. Paths are relative to the project root. If you omit `input[]`, OrchestOS uses the code graph to suggest the most relevant files based on keyword and semantic similarity against the task `description`. You can preview the graph suggestions with `orchestos task run --explain <id>`.
+</ParamField>
+
+<ParamField path="output" type="string[]" required>
+  The only files the LLM is allowed to write. Any write attempt outside this list is blocked, logged to SQLite as a contract violation, and the task fails immediately — nothing partial is written. Keep this list as narrow as possible for maximum reliability.
+</ParamField>
+
+<ParamField path="depends_on" type="string[]">
+  List of task `id` values that must reach `done` status before this task is eligible to run. OrchestOS enforces topological order automatically. Circular dependencies are detected and rejected at plan parse time.
+</ParamField>
+
+<ParamField path="checks" type="array">
+  Array of deterministic shell commands that run **before** the QA LLM call. If any check fails, OrchestOS reverts the files and retries — no QA tokens are spent. Each check object supports:
+
+  - `cmd` (string, required) — shell command to execute
+  - `expect_exit` (integer, default `0`) — the exit code that means success
+  - `timeout_ms` (integer, default `10000`) — maximum run time in milliseconds
+</ParamField>
+
+<ParamField path="acceptance_criteria" type="string[]">
+  Array of WHEN/THEN strings evaluated one by one by the QA LLM. Write each criterion in event-driven form: `"WHEN <condition> THEN <observable outcome>"`. The QA call passes only when every item passes. Use `orchestos spec lint <id>` to validate format before approving a spec.
+</ParamField>
+
+<ParamField path="status" type="string">
+  Managed by OrchestOS. Do not edit this field manually. Possible values: `pending`, `running`, `done`, `failed`, `failed_permanent`. A task reaches `failed_permanent` after 3 QA failures; `orchestos task diagnose <id>` runs automatically at that point.
+</ParamField>
+
+<ParamField path="retry_count" type="integer">
+  Managed by OrchestOS. Do not edit this field manually. Incremented on every retry. Visible in `orchestos task status` alongside the QA verdict.
+</ParamField>
+
+---
+
+## Annotated example
+
+The following example shows a complete task with every field. In practice most tasks only need `id`, `description`, `output`, and `acceptance_criteria`.
+
+```yaml
+version: 1
+project: my-app
+
+tasks:
+  # ── Task 1: design the interface first ────────────────────────────────────
+  - id: design-auth-api
+    description: >
+      Write an API design document for the authentication service.
+      Cover token issuance, refresh flow, and revocation endpoints.
+    executor: anthropic           # Direct Anthropic API — good for architectural docs
+    planner_model: claude-opus-4-8
+    output:
+      - docs/auth-api-design.md   # Only this file may be written
+    depends_on: []
+    acceptance_criteria:
+      - "WHEN the document is read THEN it covers POST /auth/token, POST /auth/refresh, and DELETE /auth/token"
+      - "WHEN the refresh flow is described THEN it includes token expiry and rotation details"
+    status: pending
+    retry_count: 0
+
+  # ── Task 2: implement the endpoints ───────────────────────────────────────
+  - id: implement-auth-routes
+    description: >
+      Implement the authentication routes defined in docs/auth-api-design.md.
+      Use the existing middleware pattern in src/middleware/auth.ts.
+    executor: openrouter          # Route via OpenRouter for cost efficiency
+    executor_model: deepseek/deepseek-v4-flash
+    skill: implement              # Inject coding guidelines into the prompt
+    input:
+      - docs/auth-api-design.md   # Explicit: LLM reads the design doc
+      - src/middleware/auth.ts    # Explicit: LLM reads existing pattern
+    output:
+      - src/routes/auth.ts        # REQUIRED: only this file may be written
+      - src/routes/auth.test.ts
+    depends_on:
+      - design-auth-api           # Must be done first
+    checks:
+      - cmd: "bun run typecheck"
+        expect_exit: 0
+        timeout_ms: 30000
+      - cmd: "bun test src/routes/auth.test.ts"
+        expect_exit: 0
+        timeout_ms: 60000
+      - cmd: "grep -r 'TODO' src/routes/auth.ts"
+        expect_exit: 1            # grep exits 1 when nothing found = no TODOs
+    acceptance_criteria:
+      - "WHEN POST /auth/token is called with valid credentials THEN it returns a signed JWT"
+      - "WHEN the token is expired THEN POST /auth/refresh returns a new token"
+      - "WHEN DELETE /auth/token is called THEN the token is added to the revocation list"
+    status: pending
+    retry_count: 0
+```
+
+<Accordion title="checks[] — fail fast before spending QA tokens">
+  The `checks[]` array is your first line of defence. Deterministic checks run immediately after the LLM writes files, before the QA LLM call. If a check fails, OrchestOS reverts the files and schedules a retry. This prevents wasting QA tokens on output that has obvious compilation or test failures.
+
+  ```yaml
+  checks:
+    - cmd: "bun run typecheck"          # TypeScript type check — fast
+    - cmd: "bun test src/components"    # Run only the affected tests
+    - cmd: "grep -r 'TODO' src/auth.ts"
+      expect_exit: 1                    # Fail if any TODO remains
+      timeout_ms: 5000
+  ```
+
+  Tips:
+  - Scope `bun test` to the affected directory rather than the whole project to keep checks fast.
+  - Use `expect_exit: 1` with `grep` to assert the absence of unwanted strings.
+  - Set generous `timeout_ms` for slow integration tests to avoid flaky timeouts.
+</Accordion>
+
+<Accordion title="acceptance_criteria[] — WHEN/THEN format">
+  Each acceptance criterion is evaluated independently by the QA LLM. The WHEN/THEN format forces you to describe observable behavior rather than implementation details, which leads to more reliable QA verdicts.
+
+  ```yaml
+  acceptance_criteria:
+    - "WHEN user submits empty form THEN a validation error is shown inline"
+    - "WHEN token expires THEN the user is redirected to /login"
+    - "WHEN the API returns 429 THEN the UI shows a retry-after message"
+  ```
+
+  Avoid vague criteria like `"WHEN the code is reviewed THEN it looks good"`. QA can only check what it can observe in the written files.
+
+  Use `orchestos spec lint <task-id>` to check that all criteria follow the WHEN/THEN format before approving a spec.
+</Accordion>
+
+<Accordion title="status lifecycle">
+  OrchestOS manages the `status` field automatically. The lifecycle is:
+
+  ```
+  pending → running → done
+                    ↘ pending (retry, retry_count + 1)
+                    ↘ failed_permanent  (after 3 QA failures → auto-diagnose)
+  ```
+
+  Never edit `status` or `retry_count` by hand unless you are resetting a `failed_permanent` task to `pending` for a fresh attempt after fixing the task definition. To reset all tasks to `pending` for testing, use `orchestos reset --yes`.
+</Accordion>

@@ -1,0 +1,248 @@
+---
+title: "Spec-Driven Development and Task Gating in OrchestOS"
+sidebarTitle: "Specs"
+description: "Use specs to define WHEN/THEN acceptance criteria before any LLM call runs, and gate execution until every task has a human-approved specification."
+---
+
+A spec is a contract that lives alongside your task definition. It captures what the task must produce — written and reviewed by a human — before the LLM writes a single byte. When `requireSpec: true` is set in your config, the harness blocks task execution entirely until the spec carries an `approved` status. This makes specs the primary tool for keeping LLM output aligned with intent on brownfield codebases and team workflows.
+
+## Where specs live
+
+Each spec is a Markdown file at `.orchestos/specs/<task-id>.md`. The file has a YAML frontmatter block followed by free-form Markdown sections. OrchestOS reads and writes this file automatically — you edit only the body.
+
+```text
+.orchestos/
+└── specs/
+    ├── add-button.md
+    ├── auth-flow.md
+    └── archive/
+        └── old-task.md
+```
+
+---
+
+## The spec creation flow
+
+<Steps>
+
+### Scaffold a spec shell
+
+Create an empty spec template for a task:
+
+```bash
+orchestos spec create add-button
+```
+
+This writes `.orchestos/specs/add-button.md` with a frontmatter block (`status: draft`) and placeholder section headers. Open it in your editor to fill it in.
+
+### Draft the spec body with an LLM
+
+If you want a starting point, let OrchestOS generate the spec body from the task description:
+
+```bash
+orchestos spec draft add-button
+```
+
+The LLM fills in the Context, Description, and acceptance criteria sections based on the task's `description` field in `tasks.yaml`. The spec remains `status: draft` after drafting — you should read and edit it before approving.
+
+<Tip>
+`spec draft` is a starting point, not a finished spec. Review every generated criterion and replace vague ones with precise WHEN/THEN statements before approving.
+</Tip>
+
+### Lint the spec
+
+Run the linter to check that all acceptance criteria use WHEN/THEN format and that brownfield delta headers are present:
+
+```bash
+orchestos spec lint add-button
+```
+
+The linter exits `1` if any findings exist and prints a suggested rewrite for each free-form criterion:
+
+```text
+[lint] add-button: 2 findings
+
+  ✗ "The button should be visually distinct when disabled"
+    → Convert to: WHEN <trigger/condition> THEN <expected observable result>
+      e.g. "WHEN Button receives disabled=true THEN opacity-50 and cursor-not-allowed are applied"
+
+  ✗ Missing ## MODIFIED section (capabilities.modified: hover-state)
+    → Add a ## MODIFIED section with the complete previous requirement
+```
+
+Fix each finding in the spec file, then re-run `spec lint` until it exits `0`.
+
+### Approve the spec
+
+Once the lint passes and you are satisfied with the criteria, approve the spec:
+
+```bash
+orchestos spec approve add-button
+```
+
+OrchestOS validates that the acceptance criteria section is non-empty and contains no placeholder text, then sets `status: approved` and records `approvedAt`. The task is now unblocked.
+
+```text
+[spec] Approved: add-button
+```
+
+**Approval is blocked if:**
+- `clarify: pending` is set in the frontmatter — resolve the open clarification first.
+- The acceptance criteria section is empty or still contains `<criterio 1>` placeholders.
+
+### Run the task
+
+With an approved spec in place, the task runs normally:
+
+```bash
+orchestos task run ./my-project --id add-button
+```
+
+If `requireSpec: true` is set in `orchestos.config.yaml` and the spec is missing or not yet approved, the harness stops before making any LLM call:
+
+```text
+Task 'add-button' requires an approved spec. Run: orchestos spec approve add-button
+```
+
+</Steps>
+
+---
+
+## Enabling the spec gate
+
+Add `requireSpec: true` to `orchestos.config.yaml` to enforce that every task has an approved spec before it can run:
+
+```yaml
+# orchestos.config.yaml
+requireSpec: true
+```
+
+With this flag set, `orchestos task run` checks the spec status at the start of the middleware chain. Tasks without a corresponding `.orchestos/specs/<id>.md` file with `status: approved` are blocked immediately — no LLM tokens are spent.
+
+---
+
+## Example spec document
+
+Here is a complete, approved spec for a `add-button` task on a brownfield project that modifies an existing hover state:
+
+```markdown
+---
+id: add-button
+status: approved
+createdAt: "2024-11-01T10:00:00.000Z"
+approvedAt: "2024-11-01T10:45:00.000Z"
+clarify: none
+capabilities:
+  added:
+    - disabled-state
+  modified:
+    - hover-state
+---
+
+## Context
+
+The design system needs a shared Button component. A hover style already exists
+as an inline style on three legacy pages; this task centralises it and adds
+a proper disabled state.
+
+## Description
+
+Create `src/components/Button.tsx` and `src/components/Button.module.css`.
+The component must accept `label`, `onClick`, and `disabled` props. It should
+reuse the CSS tokens already defined in `src/styles/tokens.css`.
+
+## Acceptance criteria
+
+- [ ] WHEN Button renders THEN it displays the `label` text inside a `<button>` element
+- [ ] WHEN Button is hovered THEN background shifts to `var(--color-primary-dark)`
+- [ ] WHEN Button receives `disabled=true` THEN `opacity-50` and `cursor-not-allowed` are applied
+- [ ] WHEN `onClick` is triggered on a disabled Button THEN the handler is not called
+- [ ] WHEN `disabled` prop is absent THEN it defaults to `false`
+
+## Notes
+
+- Do not modify `src/styles/tokens.css` — read-only for this task.
+- Match the existing `border-radius` value from the legacy inline styles (4px).
+
+## ADDED
+
+**disabled-state**: Button now supports a `disabled` prop that visually
+signals the inactive state and prevents the click handler from firing.
+
+## MODIFIED
+
+**hover-state** (previous requirement): Hover style was applied as an inline
+`onMouseEnter`/`onMouseLeave` handler directly on each page's button element,
+setting `backgroundColor: '#1d4ed8'` inline. No shared component existed.
+New requirement: hover style is expressed as a CSS Module rule using
+`var(--color-primary-dark)` from the design token layer.
+```
+
+---
+
+## Delta headers for brownfield tasks
+
+When a task changes or removes existing behaviour, `spec lint` requires the corresponding `## ADDED`, `## MODIFIED`, and `## REMOVED` sections in the spec body. These headers are triggered by the `capabilities` frontmatter field:
+
+```yaml
+capabilities:
+  added:
+    - new-feature-name
+  modified:
+    - existing-feature-name
+  removed:
+    - deprecated-feature-name
+```
+
+<CardGroup cols={3}>
+  <Card title="## ADDED" icon="plus">
+    Describes capabilities that are entirely new. List what the task introduces and why.
+  </Card>
+  <Card title="## MODIFIED" icon="pencil">
+    Describes capabilities that are changing. Must include the **complete previous requirement** — not a fragment. The linter rejects sections under 80 characters or with only a single line.
+  </Card>
+  <Card title="## REMOVED" icon="trash">
+    Describes capabilities being deleted. Document what is being removed and confirm it is intentional.
+  </Card>
+</CardGroup>
+
+<Warning>
+The `## MODIFIED` section must contain the full previous requirement, not a summary. The linter enforces a minimum of 80 characters and at least two lines. This ensures there is enough context for the QA model to verify that nothing was accidentally broken.
+</Warning>
+
+---
+
+## Other spec commands
+
+```bash
+orchestos spec show <task-id>       # print spec content to stdout
+orchestos spec list                 # list all specs with id, status, clarify flag
+orchestos spec list --all           # include archived specs
+orchestos spec archive <task-id>    # move spec to .orchestos/specs/archive/
+```
+
+<Accordion title="Spec frontmatter field reference">
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Task identifier — must match the task `id` in `tasks.yaml` |
+| `status` | `draft` \| `approved` \| `archived` | Current spec status, managed by the CLI |
+| `createdAt` | ISO 8601 string | Set automatically when the spec is created |
+| `approvedAt` | ISO 8601 string | Set automatically when `spec approve` runs |
+| `clarify` | `pending` \| `resolved` \| `none` | Blocks approval when `pending` |
+| `capabilities.added` | string[] | Names of new capabilities introduced by this task |
+| `capabilities.modified` | string[] | Names of existing capabilities being changed |
+| `capabilities.removed` | string[] | Names of capabilities being deleted |
+
+</Accordion>
+
+<Accordion title="Viewing spec status in the dashboard">
+
+The local dashboard (`orchestos dashboard`) includes a `/specs` view that shows the lint badge for each spec (structured vs. free-form criteria) and lists archived specs. Run it with:
+
+```bash
+orchestos dashboard
+# → http://localhost:4242
+```
+
+</Accordion>

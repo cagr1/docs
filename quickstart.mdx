@@ -1,0 +1,146 @@
+---
+title: "Quickstart: Run Your First OrchestOS Task in Minutes"
+sidebarTitle: "Quickstart"
+description: "Go from a fresh install to a completed, QA-verified coding task using OrchestOS's contract-first runner: init, task init, task run, task status, runs."
+---
+
+This guide takes you from a clean machine to a verified, merged task output. You will install OrchestOS, connect your API key, initialize a project, define a task with a file contract, and watch OrchestOS run, check, and QA-validate the output. The core workflow — once you are set up — is five commands: `orchestos init`, `orchestos task init`, `orchestos task run`, `orchestos task status`, and `orchestos runs --detail`.
+
+<Steps>
+  <Step title="Install Bun and clone the repository">
+    OrchestOS requires Bun ≥ 1.1 as its runtime. If you do not have Bun installed, run the official installer first, then clone and install the project dependencies.
+
+    ```bash
+    # Install Bun (skip if you already have it)
+    curl -fsSL https://bun.sh/install | bash
+
+    # Clone OrchestOS and install dependencies
+    git clone https://github.com/cagr1/orchestos
+    cd orchestos
+    bun install
+    ```
+
+    <Tip>
+      Add a shell alias so you can call `orchestos` from anywhere. Add this line to your `~/.bashrc` or `~/.zshrc`, replacing the path with your actual clone location:
+
+      ```bash
+      alias orchestos="bun /path/to/orchestos/src/cli.ts"
+      ```
+    </Tip>
+  </Step>
+
+  <Step title="Set your API keys">
+    OrchestOS reads credentials from `~/.orchestos/.env`. The only required key is `OPENROUTER_API_KEY`, which gives you access to Claude, GPT-4o, Gemini, DeepSeek, and dozens of other models through a single endpoint.
+
+    ```bash
+    mkdir -p ~/.orchestos
+    cat > ~/.orchestos/.env <<EOF
+    OPENROUTER_API_KEY=sk-or-...        # Required — get yours at openrouter.ai
+    ANTHROPIC_API_KEY=sk-ant-...        # Optional — for direct Anthropic calls
+    OPENAI_API_KEY=sk-...               # Optional — for embeddings (text-embedding-3-small)
+    EOF
+    ```
+
+    <Note>
+      You must set `OPENROUTER_API_KEY` before running any task. Without it, OrchestOS cannot call any LLM. The other two keys are optional and only needed for specific features (direct Anthropic executor routing and semantic code graph embeddings).
+    </Note>
+  </Step>
+
+  <Step title="Initialize your project">
+    Run `orchestos init` against the project directory you want to automate. OrchestOS scans your stack, saves the detected context to SQLite, and indexes your code graph for automatic context suggestions.
+
+    ```bash
+    orchestos init ./my-project
+    ```
+
+    This command produces an `AGENTS.md` file in your project root describing the detected stack, and saves the same data to the local SQLite evidence store. From this point on, when you omit `input[]` from a task, OrchestOS uses the code graph to suggest relevant files automatically.
+  </Step>
+
+  <Step title="Create and edit your tasks.yaml">
+    Scaffold a `tasks.yaml` file in your project, then open it and define your first task. The most important field is `output[]` — it declares the exact files the LLM is allowed to write.
+
+    ```bash
+    orchestos task init ./my-project
+    # Opens tasks.yaml — edit it to describe your first task
+    ```
+
+    Here is a minimal `tasks.yaml` based on the canonical example. Replace the description, output paths, checks, and criteria to match your project:
+
+    ```yaml
+    version: 1
+    project: my-project
+    tasks:
+      - id: add-button
+        description: "Create a reusable Button component with hover and disabled states"
+        executor: openrouter
+        skill: implement
+        input:
+          - src/styles/tokens.css
+        output:
+          - src/components/Button.tsx
+          - src/components/Button.module.css
+        depends_on: []
+        checks:
+          - cmd: "bun run typecheck"
+          - cmd: "bun test src/components"
+        acceptance_criteria:
+          - "WHEN Button receives disabled=true THEN cursor-not-allowed and opacity-50 are applied"
+          - "WHEN onClick is triggered THEN it is not called while disabled=true"
+        status: pending
+        retry_count: 0
+    ```
+
+    <Warning>
+      The `output[]` field is required. If you omit it, OrchestOS will refuse to run the task. This is by design — every task must declare a contract before the LLM is invoked.
+    </Warning>
+  </Step>
+
+  <Step title="Run the task and check the result">
+    Run the next pending task, then inspect what happened.
+
+    ```bash
+    # Run the next pending task
+    orchestos task run ./my-project
+
+    # Check task status (id | status | retry count | QA verdict | cost)
+    orchestos task status ./my-project
+    ```
+
+    Once the task completes, you can inspect the full run evidence — provider, model, check results, QA verdict, cost breakdown, and any context warnings:
+
+    ```bash
+    # List recent runs
+    orchestos runs
+
+    # Inspect a specific run in full detail
+    orchestos runs --detail <run-id>
+    ```
+
+    <Tip>
+      Before spending any tokens, use `--explain` to do a dry run. OrchestOS prints the planned prompt, suggested context files, and model routing decision — without making any LLM call.
+
+      ```bash
+      orchestos task run ./my-project --explain add-button
+      ```
+    </Tip>
+  </Step>
+</Steps>
+
+## What just happened
+
+OrchestOS ran a 7-stage pipeline for your task:
+
+1. **Middleware enrichment** — loaded your spec (if any), set up a git worktree sandbox, routed the model, fetched memory, injected skills and instincts, built the final prompt.
+2. **LLM call** — the executor model generated the declared output files inside the isolated worktree.
+3. **Contract check** — any write attempt outside `output[]` was blocked and logged. If a violation occurred, the run failed immediately.
+4. **Deterministic checks** — your `checks[]` shell commands ran against the generated files. The first failure reverted the worktree and retried.
+5. **QA call** — a second LLM evaluated each `acceptance_criteria` item. Any failure reverted the worktree and returned the task to `pending`.
+6. **Merge** — on full pass, the worktree merged into your branch via fast-forward.
+7. **Evidence** — the complete run record was written to SQLite.
+
+## Next steps
+
+- Add more tasks to `tasks.yaml` using `depends_on` to chain them in order.
+- Run all pending tasks in dependency order with `orchestos task run ./my-project --all`.
+- Explore model routing in `orchestos.config.yaml` to control which LLM handles each task type.
+- Open the local dashboard with `orchestos dashboard` for a visual overview of all runs and tasks.

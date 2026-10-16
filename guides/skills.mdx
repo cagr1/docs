@@ -1,0 +1,290 @@
+---
+title: "Reusable Prompt Guidelines: OrchestOS Skills Guide"
+sidebarTitle: "Skills"
+description: "Skills are YAML-defined prompt guidelines that inject expert context into task prompts, making LLM output consistent across every run that uses them."
+---
+
+A skill is a reusable prompt component that tells the LLM *how* to approach a task — not just what to build. When you attach a skill to a task, OrchestOS compiles its instructions, anti-patterns, and verifiers into the system prompt before the LLM call. The result is consistent output that follows your team's standards without repeating the same guidelines in every task description.
+
+Skills live as YAML files in the `skills/` directory at your OrchestOS installation. You can scaffold your own, fetch curated skills from the remote registry, and compile them into deployment-ready artifacts for Claude, Cursor, or OpenAI.
+
+---
+
+## What a skill YAML contains
+
+A skill file defines everything the LLM needs to apply expert judgment on a specific type of task:
+
+```yaml
+id: tdd-enforcer
+version: 1.0.0
+name: TDD Enforcer
+description: >
+  Enforces red-green-refactor discipline. Writes a failing test
+  before any implementation exists.
+targets:
+  - claude
+  - cursor
+  - openai
+allowed_tools:
+  - read
+  - write
+  - edit
+when_to_use:
+  - Before implementing any new function, class, or endpoint
+  - When a bug was fixed but no regression test was added
+  - When refactoring code that currently has no test coverage
+instructions: |
+  Follow red-green-refactor. The order is not optional.
+
+  RED — Write a failing test first. The test must call the function
+  as the final consumer would, assert expected behavior (not internals),
+  and fail when you run the suite right now. Confirm it fails.
+
+  GREEN — Write the minimum implementation to pass the test.
+  No extra features. No "while I'm here" improvements.
+
+  REFACTOR — Clean without breaking. Run the suite after every change.
+  If it goes red, undo the last change before continuing.
+
+  Done when: tests green, code clean, no TODOs remain.
+anti_patterns:
+  - Write the implementation first, then write tests to match it
+  - Skip the refactor phase — green + messy is not done
+  - Delete or comment out a test to make the suite pass
+  - Write multiple features in one red-green-refactor cycle
+verifiers:
+  - Test suite fails before implementation is written (red confirmed)
+  - Test suite passes after implementation (green confirmed)
+  - No test was deleted or skipped to achieve green
+language_targets:
+  typescript:
+    verifiers:
+      - bun test
+      - npx tsc --noEmit
+    anti_patterns:
+      - skip describe blocks
+      - use any to bypass type checking in tests
+  python:
+    verifiers:
+      - python -m pytest
+    anti_patterns:
+      - bare assert without message
+  go:
+    verifiers:
+      - go test ./...
+    anti_patterns:
+      - ignore error returns in tests
+  default:
+    verifiers:
+      - run your test suite
+```
+
+<CardGroup cols={2}>
+  <Card title="id" icon="tag">
+    Unique identifier. Referenced in `tasks.yaml` with `skill: <id>`. Use kebab-case.
+  </Card>
+  <Card title="targets" icon="bullseye">
+    Which LLM providers this skill is compiled for: `claude`, `cursor`, `openai`.
+  </Card>
+  <Card title="allowed_tools" icon="wrench">
+    Tools the LLM may use during this skill's tasks: `read`, `write`, `edit`.
+  </Card>
+  <Card title="when_to_use" icon="question">
+    Conditions that signal this skill should be applied. Used for routing and documentation.
+  </Card>
+  <Card title="instructions" icon="list">
+    The core prompt text injected into the system prompt. Write in imperative voice.
+  </Card>
+  <Card title="anti_patterns" icon="ban">
+    Behaviors the LLM must avoid. Injected as explicit prohibitions in the prompt.
+  </Card>
+  <Card title="verifiers" icon="check-double">
+    Checklist items the LLM must confirm before declaring the task done.
+  </Card>
+  <Card title="language_targets" icon="code">
+    Per-language verifier commands and additional anti-patterns, selected automatically when compiling with `--project`.
+  </Card>
+</CardGroup>
+
+---
+
+## Managing skills
+
+### Add a new skill
+
+Scaffold a new skill YAML with all required fields pre-filled as templates:
+
+```bash
+orchestos skill add my-skill-id
+```
+
+This creates `skills/my-skill-id.yaml`. Open it and replace the placeholder content with your guidelines.
+
+### List skills
+
+Show all skill YAML files in the `skills/` directory:
+
+```bash
+orchestos skill list
+```
+
+### Build / compile skills
+
+Compile all skills to deployment artifacts under `dist/skills/`:
+
+```bash
+orchestos skill build
+```
+
+Compile with language-aware sections by pointing at your project — OrchestOS detects the stack and selects the matching `language_targets` block:
+
+```bash
+orchestos skill build --project ./my-project
+```
+
+For example, if your project is TypeScript, the compiler merges the `language_targets.typescript` verifiers and anti-patterns into the compiled output automatically. Any skill without a matching language entry falls back to `language_targets.default`.
+
+<Tip>
+Run `orchestos skill build --project ./my-project` before starting a multi-task session on a new project to get language-aware verifier commands baked into your prompts.
+</Tip>
+
+### Scaffold with language-specific verifiers
+
+Generate a skill template pre-filled for a specific language's test runner and conventions:
+
+```bash
+orchestos skill scaffold --language typescript
+```
+
+---
+
+## Fetching skills from the registry
+
+OrchestOS ships with a remote registry of curated skills. You can browse and pull them directly:
+
+```bash
+# See what's available
+orchestos skill fetch --list
+
+# Pull a curated skill for a specific language
+orchestos skill fetch --language typescript
+```
+
+`--list` prints a table of available remote skills with their IDs and descriptions. `--language` downloads the curated skill bundle for that language and writes it to your local `skills/` directory.
+
+---
+
+## Using a skill in tasks.yaml
+
+Attach a skill to any task by setting the `skill` field to the skill's `id`:
+
+```yaml
+tasks:
+  - id: add-button
+    description: "Create a reusable Button component with hover and disabled states"
+    skill: tdd-enforcer          # injects tdd-enforcer guidelines into the prompt
+    output:
+      - src/components/Button.tsx
+    checks:
+      - cmd: "bun test src/components"
+    acceptance_criteria:
+      - "WHEN Button renders THEN it displays the label prop"
+      - "WHEN disabled=true THEN the onClick handler is not called"
+```
+
+When the harness builds the prompt, it reads the compiled artifact from `dist/skills/` and injects it into the system prompt before the LLM call. The LLM receives the full `instructions`, `anti_patterns`, and `verifiers` as part of its context.
+
+<Note>
+Run `orchestos skill build` at least once before referencing a skill in a task. The harness reads from `dist/skills/` — the compiled output — not from the raw YAML.
+</Note>
+
+---
+
+## Language-aware compilation
+
+The `language_targets` section in a skill YAML defines per-language verifier commands and additional anti-patterns. When you compile with `--project`, OrchestOS detects the stack and merges the right block:
+
+```yaml
+language_targets:
+  typescript:
+    verifiers:
+      - bun test
+      - npx tsc --noEmit
+    anti_patterns:
+      - use any to bypass type checking in tests
+  csharp:
+    verifiers:
+      - dotnet test
+    anti_patterns:
+      - "[Ignore] without a documented reason"
+  python:
+    verifiers:
+      - python -m pytest
+    anti_patterns:
+      - bare assert without message
+  rust:
+    verifiers:
+      - cargo test
+    anti_patterns:
+      - unwrap() in test assertions
+  go:
+    verifiers:
+      - go test ./...
+    anti_patterns:
+      - ignore error returns in tests
+  default:
+    verifiers:
+      - run your test suite
+```
+
+If no language-specific block exists for the detected stack, the `default` block is used. This means every skill works on any project — language-specific content is a progressive enhancement.
+
+---
+
+## Supported languages
+
+OrchestOS's code graph indexer and skill compiler support **36 languages**. Run `orchestos skill languages` to see the full list:
+
+<Accordion title="All 36 supported languages">
+
+TypeScript · JavaScript · Python · C# · Rust · Go · Java · Kotlin · Scala · Ruby · PHP · Swift · Elixir · Haskell · Lua · Perl · R · Dart · Svelte · OCaml · Julia · Visual Basic · F# · Shell · PowerShell · SQL · C · C++ · Objective-C · Groovy · Clojure · Erlang · Nim · Zig · Crystal · D
+
+Use `orchestos skill scaffold --language <lang>` with any of these identifiers to get a language-specific skill template pre-filled with the appropriate verifier commands.
+
+</Accordion>
+
+---
+
+## Skills in the middleware chain
+
+When `orchestos task run` executes, the middleware chain runs ten enrichment steps before any LLM call:
+
+```text
+spec-gate → sandbox-setup → classify-route → memory-fetch → skill-route →
+tool-policy → constitution-load → context-source → instinct-apply → prompt-build
+```
+
+The `skill-route` step reads the compiled skill artifact from `dist/skills/` and adds it to the shared `RunContext`. The `prompt-build` step then assembles the final system prompt, with the skill's instructions, anti-patterns, and verifiers included in the text the model sees.
+
+<Accordion title="Built-in curated skills">
+
+The OrchestOS `skills/` directory ships with a set of ready-to-use skills covering common task types:
+
+| Skill ID | Purpose |
+|---|---|
+| `tdd-enforcer` | Red-green-refactor discipline for any test-driven task |
+| `test-writer` | Adding comprehensive tests to existing code |
+| `api-contract` | Define request/response contracts before implementation |
+| `diagnose` | Structured hypothesis-verify debugging cycles |
+| `improve-architecture` | Module responsibility analysis and extraction planning |
+| `context-compression` | Generate a compact `CONTEXT.md` under 500 tokens |
+| `qa-structured` | Evaluate implementation against acceptance criteria with evidence |
+| `security-review` | Security-focused code review checklist |
+| `frontend-design` | Production-grade UI craft — kills AI-slop visual patterns |
+| `ux-guidelines` | WCAG/HIG/Material accessibility and interaction checklist |
+| `design-tokens` | Three-layer token architecture (primitive → semantic → component) |
+| `pre-task-alignment` | Ambiguity check — returns clarifying questions before writing code |
+| `fix-typescript-errors` | Minimal-change TypeScript error resolution |
+| `generate-prisma-migration` | Safe Prisma schema changes with migration commands |
+
+</Accordion>

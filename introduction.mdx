@@ -1,0 +1,77 @@
+---
+title: "Introduction to OrchestOS: Safe LLM Coding Delegation"
+sidebarTitle: "Introduction"
+description: "Learn what OrchestOS is, the problem it solves, and the key design decisions that make LLM-powered coding tasks safe and verifiable."
+---
+
+OrchestOS is a contract-first CLI that runs LLM-powered coding tasks inside declared file contracts. You describe what you want built, you declare which files the LLM is allowed to write, and OrchestOS handles the rest — prompting the model, isolating the run in a git worktree sandbox, verifying the output with deterministic checks, and passing it through a QA LLM before anything merges into your codebase.
+
+## The problem it solves
+
+Delegating software work to an LLM today asks you to trust a black box. You write a prompt, the model produces files, and you hope it only touched what you asked it to touch. If something breaks, you sift through a diff and try to figure out what went wrong. There is no contract, no evidence, and no systematic way to know whether the output actually meets your requirements.
+
+OrchestOS removes both friction points:
+
+- **The trust barrier** — every run produces a full evidence record in SQLite: tokens spent, cost per sub-agent, files attempted vs. files authorized, check results, QA verdict, and context warnings. You never have to trust blindly.
+- **The technical barrier** — you describe tasks in plain language. OrchestOS handles model routing, context building, sandbox setup, and QA. You do not need to know how any of that works.
+
+## Key differentiators
+
+### Contract-first: declared output, hard enforcement
+
+Every task in `tasks.yaml` includes an `output[]` list — the exact set of files the LLM may write. This is not a suggestion. Any write attempt outside that list is blocked at runtime, logged to the evidence store, and immediately fails the run. Nothing partial escapes to your branch.
+
+```yaml
+output:
+  - src/components/Button.tsx
+  - src/components/Button.module.css
+```
+
+### Sandbox via git worktrees
+
+OrchestOS creates an isolated git worktree for every task run. The LLM writes into that worktree, not into your working tree. On QA pass, the worktree merges via fast-forward. On failure, it is discarded entirely. Your main branch is never touched until the output is verified.
+
+### Deterministic checks before the QA LLM
+
+Shell commands (typecheck, test suite, grep assertions) run before any QA LLM tokens are spent. The first failing check reverts the worktree immediately and retries. This fail-fast design means you only pay QA inference costs when the output is structurally sound.
+
+```yaml
+checks:
+  - cmd: "bun run typecheck"
+  - cmd: "bun test src/components"
+```
+
+### QA LLM validates acceptance criteria
+
+After deterministic checks pass, a second LLM call evaluates each `acceptance_criteria` item one by one. If any criterion fails, the worktree is reverted and the task returns to `pending`. After three QA failures the task becomes `failed_permanent` and a diagnosis agent automatically analyzes the run history to suggest a fix.
+
+```yaml
+acceptance_criteria:
+  - "WHEN Button receives disabled=true THEN cursor-not-allowed and opacity-50 are applied"
+  - "WHEN onClick is triggered THEN it is not called while disabled=true"
+```
+
+### SQLite evidence store
+
+Every run writes a complete record to a local SQLite database: provider used, model, token counts, cost breakdown per sub-agent, `snapshot_before` and `snapshot_after`, files attempted, files authorized, files blocked, QA verdict, and any context monitor warnings. You can query it with `orchestos runs --detail <run-id>` or export everything to JSON.
+
+### Dashboard for observability
+
+The built-in web dashboard (`orchestos dashboard`) reads directly from SQLite and gives you four views: runs with cost breakdown, task status and retry history, instinct proposals for review, and spec lint results. It runs locally with no external dependencies.
+
+## How the pieces fit together
+
+```text
+tasks.yaml → middleware chain → LLM call → contract check → checks[] → QA call → done / pending / failed_permanent
+```
+
+You define tasks. OrchestOS enriches each task with context, routes it to the right model, runs it in a sandbox, enforces the file contract, runs deterministic checks, validates with a QA LLM, and records every step. The human decides what to build. OrchestOS decides how to verify it was built correctly.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Run your first task in five commands.
+  </Card>
+  <Card title="Tasks Concept" icon="list-check" href="/concepts/tasks">
+    Deep-dive into tasks.yaml — every field explained.
+  </Card>
+</CardGroup>

@@ -1,0 +1,125 @@
+---
+title: "Contracts: Controlling What the LLM Can Write in OrchestOS"
+sidebarTitle: "Contracts"
+description: "Understand how OrchestOS uses output[] as a hard file-write contract that blocks LLM scope creep and produces auditable evidence of every run."
+---
+
+Every task in OrchestOS carries a contract: the `output[]` field is the complete and exhaustive list of files the LLM is permitted to write. This is not a suggestion, a hint, or a soft guideline — OrchestOS enforces it strictly. If the LLM tries to write a file that is not in `output[]`, the write is blocked, the violation is logged to SQLite, and the task fails immediately. Nothing partial ever lands on your branch. When a task reaches `done`, you have proof that exactly the declared files were written and nothing else.
+
+## How enforcement works
+
+After the LLM generates its response, OrchestOS parses the output into a list of file paths and their contents. Before writing a single byte to disk, every path is normalized and checked against `output[]`. The check is strict:
+
+- Path normalization strips leading `./`, collapses duplicate slashes, and canonicalizes backslashes so that `./src/Button.tsx`, `src//Button.tsx`, and `src\Button.tsx` are all treated as `src/Button.tsx`.
+- If **any** attempted path is not in the normalized allowed list, the entire write is aborted.
+- The violated paths are recorded in the run's SQLite evidence row under `filesBlocked`.
+- The task status becomes `failed` and is queued for retry.
+
+<Warning>
+  Contract enforcement is all-or-nothing. If the LLM tries to write three files and one is outside `output[]`, **none** of the three files are written. OrchestOS never applies partial results.
+</Warning>
+
+## Declaring a contract
+
+The only required field in a task definition is `output[]`. A task with an empty `output` array is invalid and will be rejected at parse time.
+
+```yaml
+tasks:
+  - id: add-auth-service
+    description: "Implement JWT-based authentication service"
+    executor: anthropic
+
+    input:                                  # Optional — files the LLM may READ
+      - src/db/users.ts                     # Explicit read access
+      - src/config/env.ts
+
+    output:                                 # REQUIRED — files the LLM may WRITE
+      - src/services/auth.ts               # Exactly these two files, nothing else
+      - src/services/auth.test.ts
+
+    acceptance_criteria:
+      - "WHEN a valid token is presented THEN the user object is returned"
+      - "WHEN an expired token is presented THEN a 401 error is thrown"
+```
+
+<Note>
+  You can omit `input[]` entirely. When `input` is absent, OrchestOS uses the code graph to auto-suggest the most relevant context files based on keyword and semantic similarity to the task description. See [Context auto-suggestion](#context-auto-suggestion) below.
+</Note>
+
+## Why output[] exists
+
+Without a declared contract, an LLM can — and does — touch files you didn't intend. It might "helpfully" update a configuration file, refactor a shared utility, or add an import to an unrelated module. In a real codebase these silent side-effects accumulate into hard-to-debug regressions.
+
+`output[]` eliminates this category of problem entirely:
+
+<CardGroup cols={2}>
+  <Card title="Prevents scope creep" icon="shield-halved" href="/concepts/contracts">
+    The LLM can only modify the files you explicitly authorized. Every other file in your repository is read-only from the task's perspective.
+  </Card>
+  <Card title="Auditable evidence" icon="database" href="/guides/dashboard">
+    Every run records `filesAttempted`, `filesAuthorized`, and `filesBlocked` in SQLite. You can inspect any historical run with `orchestos runs --detail <run-id>`.
+  </Card>
+  <Card title="Safe retries" icon="rotate" href="/concepts/sandbox">
+    Because writes are atomic (all-or-nothing), retrying a failed task always starts from the same clean baseline. There is no risk of compounding partial writes across attempts.
+  </Card>
+  <Card title="Reviewable diffs" icon="code-compare" href="/reference/cli">
+    Since the exact set of changed files is known up front, code review is predictable. Reviewers know exactly where to look.
+  </Card>
+</CardGroup>
+
+## What happens on a contract violation
+
+The sequence of events when the LLM attempts an unauthorized write:
+
+<Steps>
+  <Step title="LLM response is parsed">
+    OrchestOS extracts all file blocks from the raw LLM output. This gives a list of paths the LLM intended to write.
+  </Step>
+  <Step title="Paths are checked against output[]">
+    Each path is normalized and compared against the declared `output[]` list. Any path not in the list is flagged as a violation.
+  </Step>
+  <Step title="Write is aborted">
+    If any violations exist, OrchestOS aborts immediately. No file is written to disk — not even the authorized ones. The worktree remains at the pre-LLM snapshot.
+  </Step>
+  <Step title="Violation is logged">
+    The blocked paths are recorded in the run's SQLite row. `filesBlocked` contains every path the LLM tried to write outside the contract. You can inspect them with `orchestos runs --detail <run-id>`.
+  </Step>
+  <Step title="Task is retried">
+    The task status becomes `failed` and is eligible for retry on the next `orchestos task run`. After three failures it becomes `failed_permanent` and the diagnosis agent runs.
+  </Step>
+</Steps>
+
+## Context auto-suggestion
+
+When you omit `input[]`, OrchestOS queries the code graph that was built by `orchestos init` or `orchestos index`. It scores every indexed file using a combination of keyword matching and semantic embeddings, then injects the top matches as context for the LLM.
+
+```bash
+# Preview what files the graph would suggest for a given task description
+orchestos context suggest "fix auth login flow"
+
+# Dry-run a specific task — see suggested context, zero LLM calls
+orchestos task run ./my-project --explain <task-id>
+```
+
+You can always override auto-suggestion by providing an explicit `input[]`. Explicit declarations take precedence and the graph is not queried.
+
+<Tip>
+  If a task produces a diagnosis warning like "> 20 files suggested — add explicit input[] to constrain context", add a short `input[]` list to that task. Explicit context reduces noise, lowers token cost, and tends to improve output quality.
+</Tip>
+
+## Inspecting contract evidence
+
+Every run — pass or fail — writes its contract trace to SQLite:
+
+```bash
+# Inspect a specific run
+orchestos runs --detail <run-id>
+
+# See the last 10 runs with summary
+orchestos runs
+
+# Export all run data to JSON
+orchestos runs --export
+```
+
+The detail view shows `filesAttempted`, `filesAuthorized`, `filesBlocked`, token counts, cost breakdown, and the QA verdict. If a contract violation happened, `filesBlocked` will list every unauthorized path the LLM tried to touch.

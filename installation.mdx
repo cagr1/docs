@@ -1,0 +1,158 @@
+---
+title: "Installing OrchestOS: Prerequisites and Setup Guide"
+sidebarTitle: "Installation"
+description: "Install OrchestOS on macOS or Linux using Bun ≥ 1.1, configure your API keys in ~/.orchestos/.env, set up a shell alias, and verify the CLI is working."
+---
+
+OrchestOS runs on Bun and uses git worktrees for task sandboxing. This page walks you through every step — from checking prerequisites to verifying a working install — including the automated installer option and manual setup for both macOS and Linux.
+
+## Prerequisites
+
+Before you install OrchestOS, make sure the following are available on your machine:
+
+- **Bun ≥ 1.1** — OrchestOS uses Bun as its runtime and package manager. Install it from [bun.sh](https://bun.sh).
+- **git** — Required for worktree sandbox isolation. Any recent version works.
+
+You can check your current versions with:
+
+```bash
+bun --version
+git --version
+```
+
+<Note>
+  OrchestOS does not support Deno or Node.js as a runtime. Bun is required. If your system has only Node.js, install Bun separately — the two can coexist without conflict.
+</Note>
+
+## Option 1: Automated installer
+
+The fastest way to get started on macOS or Linux is the bundled `install.sh` script. It checks for Bun (and installs it if missing), runs `bun install`, creates `~/.orchestos/.env`, and launches the dashboard to confirm everything is working.
+
+```bash
+git clone https://github.com/cagr1/orchestos
+cd orchestos
+bash install.sh
+```
+
+The installer will prompt you to enter your `OPENROUTER_API_KEY` into `~/.orchestos/.env` before proceeding. Follow the on-screen instructions.
+
+<Warning>
+  The automated installer requires `curl` to be available if Bun is not already installed. It will install Bun to `~/.bun` and modify your `PATH` for the current session. Open a new terminal after installation to pick up the updated `PATH`.
+</Warning>
+
+## Option 2: Manual install
+
+If you prefer to control each step, follow these instructions:
+
+<Steps>
+  <Step title="Install Bun">
+    <CodeGroup>
+      ```bash macOS / Linux
+      curl -fsSL https://bun.sh/install | bash
+      # Then restart your terminal or run:
+      export BUN_INSTALL="$HOME/.bun"
+      export PATH="$BUN_INSTALL/bin:$PATH"
+      ```
+
+      ```powershell Windows (PowerShell)
+      # Bun has experimental Windows support
+      # See https://bun.sh/docs/installation for the latest instructions
+      powershell -c "irm bun.sh/install.ps1 | iex"
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Clone the repository and install dependencies">
+    ```bash
+    git clone https://github.com/cagr1/orchestos
+    cd orchestos
+    bun install
+    ```
+  </Step>
+
+  <Step title="Set up your API keys">
+    OrchestOS reads credentials from `~/.orchestos/.env`. Create this file with your keys:
+
+    ```bash
+    mkdir -p ~/.orchestos
+    cat > ~/.orchestos/.env <<EOF
+    # OrchestOS — API Keys
+    # Required — get your key at https://openrouter.ai
+    OPENROUTER_API_KEY=sk-or-...
+
+    # Optional — needed only for executor: anthropic (direct calls)
+    # Get your key at https://console.anthropic.com
+    ANTHROPIC_API_KEY=sk-ant-...
+
+    # Optional — needed for semantic embeddings (text-embedding-3-small)
+    # Get your key at https://platform.openai.com
+    OPENAI_API_KEY=sk-...
+    EOF
+    ```
+
+    | Key | Required | Purpose |
+    |-----|----------|---------|
+    | `OPENROUTER_API_KEY` | **Yes** | Routes all LLM calls — Claude, GPT-4o, Gemini, DeepSeek, and more |
+    | `ANTHROPIC_API_KEY` | No | Used when a task sets `executor: anthropic` for direct Anthropic calls |
+    | `OPENAI_API_KEY` | No | Enables semantic embedding re-ranking in `suggestContext` via `text-embedding-3-small` |
+
+    <Note>
+      `OPENROUTER_API_KEY` is the only key you need to get started. With it you can access Claude, Gemini, DeepSeek, and GPT-4o without setting up accounts with each provider individually.
+    </Note>
+  </Step>
+
+  <Step title="Add the shell alias (optional but recommended)">
+    Instead of typing the full `bun /path/to/orchestos/src/cli.ts` every time, add an alias to your shell profile. Replace the path with the directory where you cloned the repo.
+
+    <CodeGroup>
+      ```bash ~/.bashrc
+      # Add this line to ~/.bashrc, then run: source ~/.bashrc
+      alias orchestos="bun /path/to/orchestos/src/cli.ts"
+      ```
+
+      ```bash ~/.zshrc
+      # Add this line to ~/.zshrc, then run: source ~/.zshrc
+      alias orchestos="bun /path/to/orchestos/src/cli.ts"
+      ```
+    </CodeGroup>
+
+    After adding the alias, reload your shell config:
+
+    ```bash
+    source ~/.bashrc   # or: source ~/.zshrc
+    ```
+  </Step>
+</Steps>
+
+## Verify the installation
+
+Run the following command to confirm OrchestOS is installed and your environment is correctly configured:
+
+```bash
+orchestos --version
+```
+
+If the alias is not set up yet, you can call the CLI directly:
+
+```bash
+bun /path/to/orchestos/src/cli.ts --version
+```
+
+You should see the OrchestOS version string printed to stdout. If you see a Bun error instead, double-check that `bun install` completed without errors inside the `orchestos` directory.
+
+## Troubleshooting
+
+**`orchestos: command not found`** — The shell alias is either not set or your shell profile was not reloaded. Run `source ~/.bashrc` (or `~/.zshrc`) and try again.
+
+**`OPENROUTER_API_KEY is not set`** — OrchestOS could not find `~/.orchestos/.env`. Confirm the file exists and contains a valid key with `cat ~/.orchestos/.env`.
+
+**Bun installed but not detected** — Close your terminal completely, open a new one, and re-run `bun --version`. The installer adds Bun to `~/.bun/bin` but the current shell session may not have picked up the updated `PATH`.
+
+**`bun install` fails** — Make sure you are inside the `orchestos` directory (the one containing `package.json`) before running `bun install`.
+
+## Next steps
+
+Once installation is verified, move on to the Quickstart to initialize your first project and run your first task.
+
+- [Quickstart](/quickstart) — Five commands to your first verified task output.
+- [Configuration](/configuration) — Set up `orchestos.config.yaml` to control model routing and project-level behavior.
