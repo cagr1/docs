@@ -27,7 +27,6 @@ The only required field in a task definition is `output[]`. A task with an empty
 tasks:
   - id: add-auth-service
     description: "Implement JWT-based authentication service"
-    executor: anthropic
 
     input:                                  # Optional — files the LLM may READ
       - src/db/users.ts                     # Explicit read access

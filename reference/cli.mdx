@@ -4,7 +4,7 @@ sidebarTitle: "CLI Reference"
 description: "Every OrchestOS CLI command documented with flags and usage examples — task workflow, specs, skills, instincts, context, config, and constitution."
 ---
 
-OrchestOS is controlled entirely through its CLI. Every command operates on a project directory you pass as an argument, defaulting to the current working directory when omitted. All run history, task state, and context data is stored in `~/.orchestos/db.sqlite` — you never need to manage state files manually. The sections below group commands by function and document every flag.
+Everything the [dashboard](/guides/dashboard) does is also available from the CLI, which is useful for scripting and debugging. Every command operates on a project directory you pass as an argument, defaulting to the current working directory when omitted. All run history, task state, and context data is stored in `~/.orchestos/db.sqlite` — you never need to manage state files manually. The sections below group commands by function and document every flag.
 
 <Accordion title="Project setup: detect, init, index, summary">
   These commands establish the project record, write context files, and build the code graph that powers context suggestions.
@@ -162,7 +162,7 @@ OrchestOS is controlled entirely through its CLI. Every command operates on a pr
   orchestos runs --limit 50             # Last 50 runs
   orchestos runs --detail <run-id>      # Full evidence for one run
   orchestos runs --export               # Dump all runs to runs-export.json
-  orchestos runs --analyze              # Pattern analysis via Haiku — suggests improvements
+  orchestos runs --analyze              # Pattern analysis (Auxiliary role) — suggests improvements
   orchestos runs --analyze --last 30    # Analyze the last 30 runs
   ```
 
@@ -178,7 +178,7 @@ OrchestOS is controlled entirely through its CLI. Every command operates on a pr
 
   **`orchestos dashboard`**
 
-  Starts a local web dashboard served from SQLite. No external dependencies.
+  Starts the local dashboard — Chat and Dev modes, task cards, and Settings. Binds to `127.0.0.1` only.
 
   ```bash
   orchestos dashboard                   # Starts on http://localhost:4242
@@ -189,10 +189,10 @@ OrchestOS is controlled entirely through its CLI. Every command operates on a pr
   |---|---|
   | `--port <n>` | Port to listen on. Default: `4242` |
 
-  The dashboard has four views: `/runs` (cost breakdown, context warnings), `/tasks` (status, retry count, QA verdict), `/instincts` (approve/reject proposals from the UI), `/specs` (lint badge, archived specs).
+  See [Dashboard](/guides/dashboard) for what each mode and Settings section does.
 </Accordion>
 
-<Accordion title="Specs: spec create, spec draft, spec show, spec list, spec approve, spec lint, spec archive">
+<Accordion title="Specs: spec create, spec draft, spec show, spec list, spec approve, spec approve-design, spec lint, spec archive">
   Specs live in `.orchestos/specs/<task-id>.md` and contain WHEN/THEN acceptance criteria for a task. When `requireSpec: true` is set in `orchestos.config.yaml`, OrchestOS blocks task execution until the spec is approved.
 
   **`orchestos spec create <task-id>`**
@@ -250,6 +250,16 @@ OrchestOS is controlled entirely through its CLI. Every command operates on a pr
 
   ```bash
   orchestos spec approve add-button
+  ```
+
+  ---
+
+  **`orchestos spec approve-design <task-id>`**
+
+  Approves the `## Design` section of a complex spec. Required before `spec approve` for specs that have a design section.
+
+  ```bash
+  orchestos spec approve-design add-button
   ```
 
   ---
@@ -348,20 +358,22 @@ OrchestOS is controlled entirely through its CLI. Every command operates on a pr
 
   **`orchestos skill fetch`**
 
-  Fetches a curated skill from the remote registry.
+  Lists or imports skills from the community registry.
 
   ```bash
-  orchestos skill fetch --language TypeScript    # Fetch curated TypeScript skill
-  orchestos skill fetch --list                   # List available remote skills
+  orchestos skill fetch --list                  # List available skills
+  orchestos skill fetch --name <skill-id>       # Import one skill by ID
   ```
 
   | Flag | Description |
   |---|---|
-  | `--language <lang>` | Language to fetch a curated skill for |
-  | `--list` | List all skills available in the remote registry |
+  | `--list` | List all skills available in the registry |
+  | `--name <id>` | Import a specific skill by ID into `skills/<id>.yaml` |
+
+  Requires the dashboard to be running (`orchestos dashboard`).
 </Accordion>
 
-<Accordion title="Instincts: instinct list, instinct add, instinct review, instinct approve, instinct reject, instinct set-confidence">
+<Accordion title="Instincts: instinct list, instinct add, instinct review, instinct approve, instinct reject, instinct set-confidence, instinct propose">
   Instincts are atomic learned behaviors injected into the system prompt before each task run. They encode project-specific patterns the LLM should follow. Instincts with `confidence >= 0.8` and `verified: true` are applied automatically; instincts below `0.6` are never applied without review.
 
   **`orchestos instinct list`**
@@ -442,9 +454,19 @@ OrchestOS is controlled entirely through its CLI. Every command operates on a pr
   ```bash
   orchestos instinct set-confidence abc123 0.9
   ```
+
+  ---
+
+  **`orchestos instinct propose`**
+
+  Proposes an auto-instinct (`confidence: 0.6`, `source: auto`, `verified: false`). It is not applied until you approve it.
+
+  ```bash
+  orchestos instinct propose --trigger "WHEN task touches billing" --action "import from src/billing/stripe.ts"
+  ```
 </Accordion>
 
-<Accordion title="Memory: memory conflicts">
+<Accordion title="Memory: memory conflicts, memory resolve">
   OrchestOS stores persistent memory entries across sub-agent runs and uses BM25 full-text search to detect conflicts between entries.
 
   **`orchestos memory conflicts`**
@@ -461,6 +483,18 @@ OrchestOS is controlled entirely through its CLI. Every command operates on a pr
   | `--project <path>` | Specify the project root. Defaults to cwd |
 
   Conflicts are classified by relation type: `conflict_with`, `supersedes`, `compatible`, `scoped`, `related`, or `not_conflict`. Conflicts detected as `conflict_with` require manual resolution before they are cleared.
+
+  ---
+
+  **`orchestos memory resolve <id>`**
+
+  Marks a conflict as resolved.
+
+  ```bash
+  orchestos memory resolve <conflict-id>
+  ```
+
+  Every finished task also writes a plain-text memory entry (`task/<id>`), visible in **Settings → (project) → Memory**.
 </Accordion>
 
 <Accordion title="Context: context show, context update, context list, context compress, context suggest">
@@ -584,4 +618,47 @@ OrchestOS is controlled entirely through its CLI. Every command operates on a pr
   ```bash
   orchestos constitution show ./my-project
   ```
+</Accordion>
+
+<Accordion title="Ad-hoc runs and maintenance: run, roadmap, setup, reset">
+  **`orchestos run`**
+
+  Runs a one-off task without `tasks.yaml`, with the same contract enforcement.
+
+  ```bash
+  orchestos run --task "Add a health endpoint" --output src/routes/health.ts
+  orchestos run --graph            # run the full DAG declared in tasks.yaml
+  ```
+
+  | Flag | Description |
+  |---|---|
+  | `--task <description>` | What to do. Required unless `--graph` is set |
+  | `--output <paths>` | Comma-separated files the executor may write. Required unless `--graph` is set |
+  | `--skill <id>` | Skill to inject as guidelines |
+  | `--file <paths>` | Comma-separated input files to include as context |
+  | `--project <path>` | Project root. Defaults to the current directory |
+  | `--sandbox <mode>` | `worktree`, `cwd`, or `auto` (default) |
+  | `--keep-worktree` | Keep the worktree on failure for debugging |
+  | `--graph` | Run every task in `tasks.yaml` in dependency order |
+  | `--dry-run` | Print the prompt without calling a model; with `--graph`, show the plan without executing |
+  | `--max-cost <usd>` | With `--graph`: stop when accumulated cost reaches this value |
+  | `--max-minutes <n>` | With `--graph`: stop after this many wall-clock minutes |
+
+  ---
+
+  **`orchestos roadmap show [path]` / `orchestos roadmap check [path]`**
+
+  `show` prints the cached `docs/roadmaps/project-profile.md`. `check` re-detects the project's disciplines, languages, and infrastructure and regenerates that file. The profile feeds the `roadmap-context` step of the [middleware chain](/concepts/middleware).
+
+  ---
+
+  **`orchestos setup`**
+
+  Checks prerequisites — Bun, git, detected CLIs, config — and prints setup instructions.
+
+  ---
+
+  **`orchestos reset --yes`**
+
+  Deletes test-session data: all runs and unverified instincts, and resets `tasks.yaml` to pending. It does not touch config, skills, `CONSTITUTION.md`, `CONTEXT.md`, or memory entries. `--yes` is required.
 </Accordion>

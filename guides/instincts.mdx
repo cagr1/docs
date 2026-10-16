@@ -78,7 +78,7 @@ This prints all instincts — manual and auto-proposed — along with their `con
 OrchestOS watches your runs and proposes new instincts automatically:
 
 1. You run `orchestos runs --analyze` (or pass `--analyze` after `--all`).
-2. A Haiku model scans the last N runs for recurring patterns — file paths that always appear together, imports that are consistently added, criteria that repeatedly fail in the same way.
+2. The Auxiliary role scans the last N runs for recurring patterns — file paths that always appear together, imports that are consistently added, criteria that repeatedly fail in the same way.
 3. When **three or more runs share a pattern**, OrchestOS calls `instinct propose` internally, creating an auto-instinct at `confidence: 0.6`, `verified: false`.
 4. The instinct sits in the review queue. **Nothing reaches the harness until you approve it.**
 

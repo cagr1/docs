@@ -138,7 +138,11 @@ The worktree and its branch remain at `.orchestos/worktrees/<task-id>-<timestamp
 
 ## Sandbox and git requirements
 
-OrchestOS requires that your project is a git repository before any task can run. The sandbox setup checks for a `.git` directory and fails fast with a clear error if it is not found.
+The worktree sandbox needs a git repository with a branch checked out. The default mode, `--sandbox auto`, uses a worktree when it can. Outside a git repository, on a detached HEAD, or with `--sandbox cwd`, OrchestOS falls back to writing directly in the project and prints a warning. Check the run log for `sandbox: worktree created` to confirm a run was isolated.
+
+<Warning>
+  The worktree is the only sandbox. There is no VM or container isolation, and CLI agents run with your user's permissions.
+</Warning>
 
 ```bash
 # Initialize git if you haven't already

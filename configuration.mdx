@@ -1,244 +1,122 @@
 ---
-title: "Configuring OrchestOS: Config File, Keys, and Constitution"
+title: "Configuring OrchestOS: Roles, Config File, Keys, and Constitution"
 sidebarTitle: "Configuration"
-description: "Configure OrchestOS with orchestos.config.yaml for model routing and executor settings, set API keys in .env, and define agent rules in CONSTITUTION.md."
+description: "Configure OrchestOS: assign the four roles, tune orchestos.config.yaml, add optional API keys in ~/.orchestos/.env, and define agent rules in CONSTITUTION.md."
 ---
 
-OrchestOS uses three configuration layers: a project-level `orchestos.config.yaml` for model routing and executor behavior, a global `~/.orchestos/.env` file for API credentials, and an optional `CONSTITUTION.md` file that constrains what the agent is allowed to do in your codebase. This page documents every field in each layer.
+OrchestOS has three configuration layers:
 
-## orchestos.config.yaml
+- **`orchestos.config.yaml`** at the project root — role assignments and harness options. Most of it is editable from **Settings** in the dashboard.
+- **`~/.orchestos/.env`** — optional API keys, global to your machine.
+- **`CONSTITUTION.md`** at the project root — optional rules injected into every task prompt.
 
-This is the project-level configuration file. Create it by running `orchestos config init ./my-project` inside your project directory, or scaffold it manually. It lives in the root of your project.
+## Roles
 
-### Full example
+Four roles decide which agent and model handle each kind of call:
 
 ```yaml
 config_version: 1
-executorEngine: external
-
-models:
-  planner:
-    provider: openrouter
-    model: anthropic/claude-haiku-4-5
-  executor_heavy:
-    provider: openrouter
-    model: deepseek/deepseek-v4-flash
-  executor_light:
-    provider: openrouter
-    model: deepseek/deepseek-v4-flash
-  default:
-    provider: openrouter
-    model: deepseek/deepseek-v4-flash
-  qa:
-    provider: openrouter
-    model: anthropic/claude-haiku-4-5
-
-agentic:
-  maxIterations: 25
+roles:
+  orchestrator: { agent: claude, model: claude-opus-5-5, effort: medium }  # chat + task drafts
+  executor:     { agent: codex,  model: gpt-6-luna,      effort: medium }  # writes the files
+  reviewer:     { agent: codex,  model: gpt-6-luna,      effort: medium }  # QA verdict
+  auxiliary:    { agent: codex,  model: gpt-5.6-luna }                     # diagnosis, memory judge
 ```
 
-### Top-level fields
+`agent` is `claude`, `codex`, `opencode`, or `api`. Edit roles in **Settings → Model routing**, or by hand in the file. Nothing is hardcoded: each role uses exactly what is configured, and a missing role stops with an error asking you to assign it. Full details in [Model routing](/reference/models).
 
-<ParamField path="config_version" type="number" required>
-  Schema version for the config file. Always set this to `1`. OrchestOS uses this to validate the config and warn you if the format changes in a future release.
-</ParamField>
+## Other fields
 
-<ParamField path="executorEngine" type="string">
-  Sets the default execution engine for tasks that do not declare their own `engine:` field. Accepted values:
+```yaml
+requireSpec: false        # true = every task needs an approved spec before running
+apiMode: single-shot      # only for agent: api — single-shot | agentic
+agentic:
+  maxIterations: 15       # tool-use rounds per attempt when apiMode is agentic
+external:
+  timeoutMs: 1200000      # wall-clock limit for one CLI call (default 20 min)
+adversarialQA: false      # opt-in second judge after a QA pass
+refuterQA: false          # opt-in re-check after a QA fail, before spending a retry
+```
 
-  - `single-shot` — Sends a single prompt to the LLM and parses the full response. Fastest and lowest-cost option. This is the default when `executorEngine` is omitted.
-  - `agentic` — Runs a multi-turn tool-use loop where the model can call tools and read results across multiple rounds. More capable for complex tasks. Pair with `agentic.maxIterations` to cap the loop.
-  - `external` — Delegates execution to an installed external CLI (such as Claude Code). Requires the external binary to be available on your `PATH`.
-</ParamField>
-
-### models
-
-The `models` block maps task intent to provider and model. OrchestOS automatically routes each task to the appropriate model slot based on keyword matching against the task description. A per-task `executor` field in `tasks.yaml` always overrides this config.
-
-<ParamField path="models.planner" type="object">
-  The model used for planning tasks — typically tasks whose description contains keywords like `plan`, `design`, or `architect`. Use a capable reasoning model here since planner output drives sub-agent decomposition.
-
-  ```yaml
-  planner:
-    provider: openrouter
-    model: anthropic/claude-haiku-4-5
-  ```
-</ParamField>
-
-<ParamField path="models.executor_heavy" type="object">
-  The model used for complex execution tasks — tasks matched by keywords like `fix`, `refactor`, or `migrate`. Use a stronger model for work that requires deeper reasoning about existing code.
-
-  ```yaml
-  executor_heavy:
-    provider: openrouter
-    model: deepseek/deepseek-v4-flash
-  ```
-</ParamField>
-
-<ParamField path="models.executor_light" type="object">
-  The model used for mechanical or generative tasks — tasks matched by keywords like `generate`, `edit`, `create`, or `doc`. A faster, cheaper model is appropriate here since these tasks are more deterministic.
-
-  ```yaml
-  executor_light:
-    provider: openrouter
-    model: deepseek/deepseek-v4-flash
-  ```
-</ParamField>
-
-<ParamField path="models.default" type="object">
-  The fallback model used when no keyword match routes a task to `planner`, `executor_heavy`, or `executor_light`. Always set this to a reliable, general-purpose model.
-
-  ```yaml
-  default:
-    provider: openrouter
-    model: deepseek/deepseek-v4-flash
-  ```
-</ParamField>
-
-<ParamField path="models.qa" type="object">
-  The model used for QA validation calls. This model evaluates each `acceptance_criteria` item after deterministic checks pass. Use a model with strong instruction-following and evaluation ability — it only reads and judges, it does not write code.
-
-  ```yaml
-  qa:
-    provider: openrouter
-    model: anthropic/claude-haiku-4-5
-  ```
-</ParamField>
-
-### Model routing summary
-
-| Task keyword match | Model slot used |
-|--------------------|----------------|
-| `plan`, `design`, `architect` | `models.planner` |
-| `fix`, `refactor`, `migrate` | `models.executor_heavy` |
-| `generate`, `edit`, `create`, `doc` | `models.executor_light` |
-| No match | `models.default` |
-| QA validation (always) | `models.qa` |
-| Per-task `executor:` field | Overrides all of the above |
-
-### requireSpec
-
-<ParamField path="requireSpec" type="boolean">
-  When set to `true`, OrchestOS blocks every task from running until it has an approved spec file in `.orchestos/specs/<task-id>.md`. Use this to enforce the Spec-Driven workflow across your project. Defaults to `false` (no spec gate).
-
-  ```yaml
-  requireSpec: true
-  ```
-
-  Manage specs with `orchestos spec draft`, `orchestos spec lint`, and `orchestos spec approve`.
-</ParamField>
-
-### agentic
-
-<ParamField path="agentic.maxIterations" type="number">
-  Only applies when `executorEngine` is `agentic`. Sets the maximum number of tool-use rounds the agentic engine may take within a single task run before it stops and returns what it has. Defaults to `15` when omitted.
-
-  This is separate from the QA retry count, which is fixed at 3 failures before a task becomes `failed_permanent`. `maxIterations` controls turns within one execution attempt; QA retries control how many times OrchestOS re-attempts the full run after a check or QA failure.
-
-  <Warning>
-    Each additional iteration in the agentic loop costs inference tokens. Keep this value conservative — start with the default and increase it only if you observe the agent stopping before finishing multi-step tasks.
-  </Warning>
-</ParamField>
+See the [config file reference](/reference/config) for every field, including per-task agent rules.
 
 ---
 
 ## ~/.orchestos/.env
 
-The `.env` file at `~/.orchestos/.env` holds your API credentials. OrchestOS loads this file at startup for every command. It is a global file — not project-specific — so you set it once for all projects on your machine.
+API keys are optional. You need none if every role uses a CLI agent. OrchestOS loads this file at startup for every command.
 
 ```bash
 # ~/.orchestos/.env
-
-# Required — get your key at https://openrouter.ai
-OPENROUTER_API_KEY=sk-or-...
-
-# Optional — needed for executor: anthropic (direct Anthropic calls)
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Optional — needed for semantic embeddings via text-embedding-3-small
-OPENAI_API_KEY=sk-...
+OPENROUTER_API_KEY=sk-or-...    # roles with agent: api (default provider)
+ANTHROPIC_API_KEY=sk-ant-...    # direct Anthropic calls
+OPENAI_API_KEY=sk-...           # embeddings (text-embedding-3-small)
 ```
 
-<ParamField path="OPENROUTER_API_KEY" type="string" required>
-  Your OpenRouter API key. This is the only required credential. OpenRouter gives you a unified endpoint for Claude, GPT-4o, Gemini, DeepSeek, Mistral, and many other models. Get yours at [openrouter.ai](https://openrouter.ai).
+<ParamField path="OPENROUTER_API_KEY" type="string">
+  Used by roles with `agent: api` when `provider` is omitted or set to `openrouter`. Get one at [openrouter.ai](https://openrouter.ai).
 </ParamField>
 
 <ParamField path="ANTHROPIC_API_KEY" type="string">
-  Your Anthropic API key. Only needed when a task sets `executor: anthropic` to bypass OpenRouter and call the Anthropic API directly. Get yours at [console.anthropic.com](https://console.anthropic.com).
+  Used by roles or tasks that call the Anthropic API directly. Get one at [console.anthropic.com](https://console.anthropic.com).
 </ParamField>
 
 <ParamField path="OPENAI_API_KEY" type="string">
-  Your OpenAI API key. Used exclusively for generating `text-embedding-3-small` embeddings during `orchestos index`. When present, OrchestOS re-ranks context file suggestions by combining semantic similarity with keyword matching, which improves context relevance even when task descriptions share no keywords with file paths. The improvement is visible in `orchestos runs --detail` under the `embed_hits` field.
+  Used for `text-embedding-3-small` embeddings during `orchestos index`. When present, context suggestions are re-ranked by semantic similarity plus keyword matching. The effect is visible as `embed_hits` in `orchestos runs --detail`.
 </ParamField>
 
 <Note>
-  Your `.env` file contains secrets. Do not commit it to version control. OrchestOS writes it to `~/.orchestos/` (your home directory) specifically to keep it outside any project repository.
+  `.env` holds secrets. It lives in your home directory to stay outside every project repository. Do not commit it.
 </Note>
 
 ---
 
 ## CONSTITUTION.md
 
-`CONSTITUTION.md` is an optional file you place in your project root. OrchestOS automatically injects its contents into every task prompt as a constraint layer — no config required. It controls what the agent is and is not allowed to do in your codebase.
-
-Create and view it with:
+`CONSTITUTION.md` is an optional file at your project root. OrchestOS injects its contents into every task prompt — no config needed.
 
 ```bash
 orchestos constitution init ./my-project   # scaffold CONSTITUTION.md
-orchestos constitution show ./my-project   # print current rules
+orchestos constitution show ./my-project   # print parsed rules
 ```
 
 ### Format
-
-The file uses three heading sections. Any text under these headings is injected verbatim into the system prompt before each LLM call.
 
 ```markdown
 # CONSTITUTION.md
 
 ## ALLOWED
 - Modify files under src/
-- Add new files under src/components/
-- Update README.md
 
 ## FORBIDDEN
 - Modify .env files
-- Delete any file
-- Modify files under src/db/migrations/
+- Delete files
 
 ## REQUIRE_CONFIRMATION
 - Any change to src/db/schema.ts
-- Any change to src/auth/
 ```
 
 <ParamField path="## ALLOWED" type="section">
-  A list of actions or file paths the LLM is explicitly permitted to interact with. Use this to narrow the agent's scope when `output[]` alone is not specific enough — for example, to allow writes only within a particular directory subtree.
+  Actions or paths the agent is explicitly permitted to touch.
 </ParamField>
 
 <ParamField path="## FORBIDDEN" type="section">
-  A list of actions or file paths the LLM must never perform. Examples include modifying `.env` files, deleting files, or touching migration scripts. The LLM sees these rules in the system prompt and is instructed to refuse any action that violates them.
+  Actions or paths the agent must never touch. The agent sees these in its prompt and is instructed to refuse.
 </ParamField>
 
 <ParamField path="## REQUIRE_CONFIRMATION" type="section">
-  A list of files or actions that require human confirmation before the LLM proceeds. Use this for high-risk files — database schemas, authentication logic, billing integrations — where you want an extra checkpoint even if the task's contract technically permits the write.
+  Files or actions that need a human checkpoint even when the task's contract permits the write.
 </ParamField>
 
-<Tip>
-  Start with a broad `FORBIDDEN` section and narrow it over time as you build trust in the agent's behavior. It is easier to relax constraints than to recover from an unexpected write to a critical file.
-</Tip>
+<Note>
+  The constitution is an instruction in the prompt. The hard boundary is the `output[]` contract, which OrchestOS enforces after the executor runs. See [Contracts](/concepts/contracts).
+</Note>
 
 ---
 
 ## Inspect your config
 
-Once you have set up `orchestos.config.yaml`, use these commands to verify and manage the configuration:
-
 ```bash
-# Show the current config for a project
-orchestos config show ./my-project
-
-# Scaffold a fresh config file (does not overwrite an existing one)
-orchestos config init ./my-project
-
-# Show the parsed CONSTITUTION.md rules
-orchestos constitution show ./my-project
+orchestos config show ./my-project   # resolved config
+orchestos config init ./my-project   # scaffold a config file (does not overwrite)
 ```

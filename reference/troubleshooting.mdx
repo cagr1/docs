@@ -168,71 +168,62 @@ Most OrchestOS failures fall into a small number of patterns: the LLM tried to w
   ```
 </Accordion>
 
-<Accordion title="API key errors">
-  **Symptom:** Errors like `401 Unauthorized`, `Invalid API key`, or `No API key found` when running tasks.
+<Accordion title="A role is unassigned">
+  **Symptom:** A task or the chat stops with `Rol '<role>' sin asignar: elígelo en Settings → Model routing`.
 
-  **Cause:** The API key for the configured provider is missing, incorrect, or using the wrong format.
+  **Cause:** The role has no assignment. OrchestOS never picks a model for you.
 
-  **Fix:**
-
-  1. Check your keys file:
-
-  ```bash
-  cat ~/.orchestos/.env
-  ```
-
-  2. Verify the key prefix matches the provider:
-     - OpenRouter keys start with `sk-or-`
-     - Anthropic keys start with `sk-ant-`
-     - OpenAI keys start with `sk-`
-
-  3. Re-create the file if needed:
-
-  ```bash
-  mkdir -p ~/.orchestos
-  cat > ~/.orchestos/.env <<EOF
-  OPENROUTER_API_KEY=sk-or-...
-  ANTHROPIC_API_KEY=sk-ant-...    # Only needed for provider: anthropic
-  OPENAI_API_KEY=sk-...           # Needed for embeddings or provider: openai
-  EOF
-  ```
-
-  4. Run `orchestos config show ./my-project` to confirm which provider is configured for each role — an error may be happening on a specific role (e.g. QA using Anthropic directly while execute uses OpenRouter).
+  **Fix:** Open **Settings → Model routing** and assign agent and model to that role, or add it under `roles:` in `orchestos.config.yaml`. See [Model routing](/reference/models).
 </Accordion>
 
-<Accordion title="Cost is unexpectedly high">
-  **Symptom:** Your API bill is higher than expected after running OrchestOS tasks.
+<Accordion title="A CLI agent fails or is not found">
+  **Symptom:** A role set to `claude`, `codex`, or `opencode` fails immediately, or `orchestos setup` does not list the CLI.
 
-  **Cause:** Each `task run` makes at minimum 2 LLM calls (execute + QA). Every retry adds 2 more calls. A task with 3 retries before failure costs 6 LLM calls. `--all` mode multiplies this across every pending task. There is no built-in budget cap for individual task runs.
+  **Cause:** The binary is not on your `PATH`, or you are not logged in.
 
   **Fix:**
 
-  1. **Use cheaper models for simple tasks.** In `tasks.yaml`, set `executor_model` to a cheaper model for tasks that are generating boilerplate, writing docs, or making small edits:
+  1. Run the CLI once by itself (`claude`, `codex`, or `opencode`) and complete its login.
+  2. Run `orchestos setup` to confirm OrchestOS detects it.
+  3. If a task pins `engine` without `executor_model` and the Executor role uses a different CLI, the run fails with an error naming the mismatch. Add `executor_model` to the task, or change the Executor role.
+</Accordion>
 
-  ```yaml
-  - id: write-readme
-    executor: openrouter
-    executor_model: deepseek/deepseek-chat   # Cheapest — fine for docs
-    output: [README.md]
+<Accordion title="API key errors">
+  **Symptom:** `401 Unauthorized`, `Invalid API key`, or `No API key found`.
+
+  **Cause:** A role uses `agent: api` (or a task runs as an API call) and the key for its provider is missing or wrong. CLI agents never need these keys.
+
+  **Fix:**
+
+  1. Run `orchestos config show ./my-project` to see which roles use `agent: api` and with which provider.
+  2. Check `~/.orchestos/.env`. Key prefixes: OpenRouter `sk-or-`, Anthropic `sk-ant-`, OpenAI `sk-`.
+
+  ```bash
+  OPENROUTER_API_KEY=sk-or-...    # agent: api, default provider
+  ANTHROPIC_API_KEY=sk-ant-...    # provider: anthropic
+  OPENAI_API_KEY=sk-...           # embeddings or provider: openai
   ```
 
-  2. **Add `checks[]` to fail fast** before the QA call. A single `bun run typecheck` check that catches a compile error saves the full cost of a QA call on every bad attempt.
+  3. Or switch the role to a CLI agent in **Settings → Model routing** and drop the key.
+</Accordion>
 
-  3. **Preview before running** — `orchestos task run --explain <task-id>` costs nothing:
+<Accordion title="Usage is unexpectedly high">
+  **Symptom:** You burn through your CLI plan's quota, or your API bill is higher than expected.
+
+  **Cause:** Each task run makes at least 2 model calls (execute + QA). Every retry adds 2 more, so a task with 3 retries costs 6 calls. `adversarialQA` and `refuterQA` add QA calls when enabled. With CLI agents these calls use your plan's quota; only `agent: api` roles cost money per call. There is no budget cap or pre-run estimate.
+
+  **Fix:**
+
+  1. **Assign a lighter model** to the Executor or Reviewer role in **Settings → Model routing**, or pin a lighter `executor_model` on simple tasks.
+  2. **Add `checks[]` to fail fast** before the QA call. A `bun run typecheck` check that catches a compile error saves the QA call on every bad attempt.
+  3. **Preview before running** — `--explain` calls no model:
 
   ```bash
   orchestos task run ./my-project --explain my-task
   ```
 
-  4. **Monitor per-run cost** in the run detail:
-
-  ```bash
-  orchestos runs --detail <run-id>
-  ```
-
-  The `## Cost` section shows a per-sub-agent breakdown so you can see exactly which role is spending the most.
-
-  5. **Use `--max-cost`** as a circuit breaker for autonomous `orchestos run --graph` runs:
+  4. **Check usage** in **Settings → Usage**, or per run with `orchestos runs --detail <run-id>`.
+  5. **Use `--max-cost`** as a circuit breaker for `orchestos run --graph`:
 
   ```bash
   orchestos run --graph --max-cost 0.50

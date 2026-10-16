@@ -34,16 +34,20 @@ Each entry in `tasks[]` supports the following fields.
   The task brief sent to the LLM. Write this as a clear, actionable instruction. The more specific you are about the expected output, the more reliable the result. You can append a user clarification to this field with `orchestos task run --clarify <id>`.
 </ParamField>
 
-<ParamField path="executor" type="string" default="openrouter">
-  The provider used to execute this task. Accepted values: `openrouter`, `anthropic`, `openai`, `codex`. A per-task `executor` always wins over the model routing configured in `orchestos.config.yaml`. See [Model Routing](/reference/models) for details.
-</ParamField>
-
-<ParamField path="planner_model" type="string">
-  Optional per-task model override for the planner role. Useful when a specific task needs a more capable planning model without changing the global config. Example: `claude-opus-4-8`.
+<ParamField path="engine" type="string">
+  Optional. Pins the task to a CLI agent: `external` (Claude Code), `codex`, or `opencode`. `single-shot` and `agentic` select an API mode. Without `engine`, the task uses the Executor role. Task rules in **Settings → Task rules** fill this field when a task is drafted. See [Model routing](/reference/models#how-a-task-picks-its-executor).
 </ParamField>
 
 <ParamField path="executor_model" type="string">
-  Optional per-task model override for the executor role. Overrides the model that would otherwise be selected by the router. Example: `anthropic/claude-sonnet-5`.
+  Optional. The model for this task. With a CLI `engine`, it is the CLI's model name. Without `engine`, the task runs as an API call through `executor` with this model.
+</ParamField>
+
+<ParamField path="cli_effort" type="string">
+  Optional. Reasoning effort passed to the CLI for this task, as-is.
+</ParamField>
+
+<ParamField path="executor" type="string" default="openrouter">
+  The API provider used when the task runs as an API call (`executor_model` set, no CLI `engine`): `openrouter`, `anthropic`, `openai`, or `codex`. `codex` here requires `OS_ENABLE_EXEC_CODEX=1`. Ignored when the task uses a CLI agent.
 </ParamField>
 
 <ParamField path="skill" type="string">
@@ -98,8 +102,8 @@ tasks:
     description: >
       Write an API design document for the authentication service.
       Cover token issuance, refresh flow, and revocation endpoints.
-    executor: anthropic           # Direct Anthropic API — good for architectural docs
-    planner_model: claude-opus-4-8
+    engine: external              # Claude Code
+    executor_model: claude-opus-5-5
     output:
       - docs/auth-api-design.md   # Only this file may be written
     depends_on: []
@@ -114,7 +118,7 @@ tasks:
     description: >
       Implement the authentication routes defined in docs/auth-api-design.md.
       Use the existing middleware pattern in src/middleware/auth.ts.
-    executor: openrouter          # Route via OpenRouter for cost efficiency
+    executor: openrouter          # API call via OpenRouter — needs OPENROUTER_API_KEY
     executor_model: deepseek/deepseek-v4-flash
     skill: implement              # Inject coding guidelines into the prompt
     input:

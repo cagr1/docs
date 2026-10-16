@@ -160,17 +160,17 @@ orchestos skill scaffold --language typescript
 
 ## Fetching skills from the registry
 
-OrchestOS ships with a remote registry of curated skills. You can browse and pull them directly:
+You can browse and import skills from the community registry:
 
 ```bash
 # See what's available
 orchestos skill fetch --list
 
-# Pull a curated skill for a specific language
-orchestos skill fetch --language typescript
+# Import one skill by ID
+orchestos skill fetch --name <skill-id>
 ```
 
-`--list` prints a table of available remote skills with their IDs and descriptions. `--language` downloads the curated skill bundle for that language and writes it to your local `skills/` directory.
+`--list` prints the available skills with their IDs. `--name` imports one skill into `skills/<id>.yaml`. Both commands go through the running dashboard, so start `orchestos dashboard` first.
 
 ---
 

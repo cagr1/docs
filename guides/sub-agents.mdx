@@ -12,17 +12,17 @@ When a feature is too large or too multi-faceted for a single task, sub-agents l
 orchestos task run . --expand <plan-task-id>
 ```
 
-The `--expand` flag tells the scheduler to treat the named task as a plan task. Instead of running a single LLM call and writing files directly, OrchestOS generates a `.plan.yaml`, validates it, and then executes each sub-task in topological order.
+The `--expand` flag tells the scheduler to treat the named task as a plan task. OrchestOS runs the parent task, whose job is to write a `.plan.yaml`, validates that plan, and then executes each sub-task in topological order.
 
 <Note>
-The plan task itself must exist in your `tasks.yaml`. Its `description` becomes the prompt sent to the planner model. You do not need to pre-write the `.plan.yaml` — OrchestOS generates it.
+The plan task must exist in your `tasks.yaml`, and its `output[]` must include a `.plan.yaml` file — that is the file the executor writes. You do not write the plan yourself. If an approved auto-split plan already exists at `<task-id>.plan.yaml`, `--expand` runs it directly.
 </Note>
 
 ## The expansion flow
 
 <Steps>
   <Step title="Parent task generates a .plan.yaml">
-    OrchestOS calls the planner model (configured in `orchestos.config.yaml` under `models.planner`) with the parent task's description. The planner uses function calling when the provider supports it, or falls back to prompting for a YAML block.
+    OrchestOS runs the parent task with the Executor role, like any other task. The executor writes the `.plan.yaml` declared in the task's `output[]`.
 
     The resulting plan looks like this:
 
@@ -121,7 +121,7 @@ Set a meaningful `topic_key` on each sub-task. It becomes the stable identifier 
 When multiple sub-agents write to overlapping memory entries, OrchestOS runs conflict detection automatically:
 
 1. BM25 full-text search finds candidate pairs with similar content.
-2. A Haiku model classifies the relationship between each pair:
+2. The Auxiliary role classifies the relationship between each pair:
 
 | Classification | Meaning |
 |---|---|
@@ -158,13 +158,13 @@ For full evidence on any individual sub-task run:
 orchestos runs --detail <run-id>
 ```
 
-The `/runs` view in the dashboard shows cost breakdown per sub-agent, context monitor warnings, and QA verdicts all in one place.
+**Settings → (project) → Runs** in the dashboard shows cost breakdown per sub-agent, context monitor warnings, and QA verdicts all in one place.
 
 ## How the plan pipeline works
 
 <CardGroup cols={2}>
   <Card title="Plan generation" icon="sitemap" href="/guides/sub-agents">
-    The planner model receives the parent task description and returns sub-tasks via function calling or a YAML block. Sub-tasks are sorted into topological order before execution begins.
+    The executor runs the parent task and writes the `.plan.yaml` declared in its `output[]`. Sub-tasks are sorted into topological order before execution begins.
   </Card>
   <Card title="Validation" icon="shield-check" href="/guides/sub-agents">
     Every plan is checked for unique IDs, valid `depends_on` references, no dependency cycles, and the presence of at least one acceptance criterion per sub-task. Invalid plans are rejected before any tokens are spent on execution.
@@ -187,10 +187,9 @@ Suppose you have this task in `tasks.yaml`:
     Implement the full checkout flow: cart types, cart service,
     and the POST /checkout route. Use the existing Order model
     in src/db/models/order.ts.
+    Write the sub-task plan to add-checkout-flow.plan.yaml.
   output:
-    - src/types/cart.ts
-    - src/services/cart.ts
-    - src/routes/checkout.ts
+    - add-checkout-flow.plan.yaml
   depends_on: [setup-order-model]
   status: pending
 ```
@@ -202,8 +201,8 @@ orchestos task run . --expand add-checkout-flow
 ```
 
 OrchestOS will:
-1. Send `add-checkout-flow`'s description to the planner model.
-2. Generate and save `add-checkout-flow.plan.yaml`.
+1. Run `add-checkout-flow` with the Executor role.
+2. Read the `add-checkout-flow.plan.yaml` it wrote.
 3. Validate the plan (unique IDs, DAG check, schema).
 4. Execute each sub-task in dependency order, each in its own worktree.
 5. Report the result table with per-sub-agent cost, tokens, and QA verdict.

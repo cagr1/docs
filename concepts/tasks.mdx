@@ -18,7 +18,7 @@ tasks:
     description: >
       Create a reusable Button component with hover
       and disabled states.           # Plain-language brief sent to the LLM
-    executor: anthropic              # openrouter (default) | anthropic | openai | codex
+    engine: external                 # Optional — pin a CLI (external = Claude Code | codex | opencode); default: Executor role
     skill: implement                 # Optional — injects skill guidelines into the prompt
 
     input:                           # Files the LLM may READ (omit to auto-suggest from code graph)
@@ -124,14 +124,12 @@ OrchestOS retries a failing task up to three times before giving up. Each failur
 tasks:
   - id: design-api
     description: "Design the authentication API interface and document it"
-    executor: anthropic
     output:
       - docs/api-auth.md
     depends_on: []          # No prerequisites — runs first
 
   - id: scaffold-endpoints
     description: "Implement the auth endpoints defined in docs/api-auth.md"
-    executor: openrouter
     input:
       - docs/api-auth.md    # Reads the output of the previous task
     output:
@@ -141,7 +139,6 @@ tasks:
 
   - id: write-tests
     description: "Write integration tests for the auth endpoints"
-    executor: openrouter
     input:
       - src/routes/auth.ts
     output:

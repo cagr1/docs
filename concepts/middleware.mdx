@@ -1,152 +1,104 @@
 ---
-title: "Middleware: How OrchestOS Enriches and Builds LLM Context"
+title: "Middleware: How OrchestOS Builds the Executor's Context"
 sidebarTitle: "Middleware"
-description: "Explore the 10-step middleware chain that enriches each task before the LLM call — from spec gating and sandbox setup through prompt assembly."
+description: "The harness stages and the five-step middleware chain that enrich each task before the executor runs — from the spec gate and sandbox through context, skills, and instincts."
 ---
 
-Before OrchestOS makes a single LLM call, it runs a deterministic enrichment chain. Ten steps execute in a fixed canonical order, each building up the context that the LLM will ultimately receive. By the time the chain completes, the context contains the resolved model, injected skill guidelines, relevant source files, approved instincts, constitution rules, and the fully assembled prompt. You control what enters that context through your `tasks.yaml`, skill files, instincts, and a small set of project-level config files — no ad-hoc prompt engineering required.
+Before the executor runs, OrchestOS builds the context it will receive. Part of that work is done by explicit harness stages, and part by a middleware chain of five steps in a fixed order. You control what enters the context through your task fields, skills, instincts, and a few project files — no ad-hoc prompt engineering.
 
-## The canonical chain
+## The order
 
 ```text
-spec-gate → sandbox-setup → classify-route → memory-fetch → skill-route →
-tool-policy → constitution-load → context-source → instinct-apply → prompt-build
+spec gate → sandbox setup → executor resolution
+  → memory-fetch → skill-route → roadmap-context → context-inject → instinct-apply
+  → constitution load → prompt build
 ```
 
-Each step either adds something to the shared context and hands off to the next step, or short-circuits by stopping the chain early (for example, `spec-gate` halts the chain if the gate condition is not met). The execution phase — the LLM call itself, contract enforcement, checks, QA, and revert logic — runs *after* the chain completes.
+Each middleware adds to a shared run context and calls the next one. The execution phase — executor call, contract check, checks, QA, revert, and evidence — runs after the prompt is built.
 
-## Step-by-step reference
+## Harness stages
 
 <Steps>
-  <Step title="1. spec-gate">
-    **What it does:** Checks whether `requireSpec: true` is set in `orchestos.config.yaml` and, if so, whether the task's spec file has been approved.
-
-    **What it controls:** If the spec gate is active and the spec is not yet approved, the run is stopped before it starts. This keeps unapproved work from reaching the LLM.
+  <Step title="Spec gate">
+    If `requireSpec: true` is set in `orchestos.config.yaml`, the run stops unless the task's spec is approved. With the default (`false`) this is a no-op.
 
     ```bash
-    orchestos spec draft add-button    # LLM generates a spec with WHEN/THEN criteria
-    orchestos spec lint  add-button    # Validate format — exit 1 on findings
-    orchestos spec approve add-button  # Mark as approved; the gate now passes
-    ```
-
-    <Note>
-      If `requireSpec` is not set (the default), this step is a no-op and the chain continues immediately.
-    </Note>
-  </Step>
-
-  <Step title="2. sandbox-setup">
-    **What it does:** Creates an isolated git worktree for the task and points all subsequent file operations at that worktree path.
-
-    **What it controls:** All subsequent file operations — context loading, LLM writes, checks — happen inside the worktree, not your main branch. See [Sandbox](/concepts/sandbox) for the full isolation model.
-
-    In dry-run mode (`--explain`), this step is skipped and file operations stay at the project root.
-  </Step>
-
-  <Step title="3. classify-route">
-    **What it does:** Classifies the task description into a task class (`implement`, `fix`, `refactor`, `doc`, `plan`, etc.) and resolves the target model and provider from `orchestos.config.yaml` or the per-task `executor` / `executor_model` fields.
-
-    **What it controls:** Which LLM runs the task. Per-task `executor` always wins over config-level routing. Model routing maps: `plan` → planner model, `fix`/`refactor` → executor_heavy, `generate`/`edit`/`doc` → executor_light, no match → default.
-  </Step>
-
-  <Step title="4. memory-fetch">
-    **What it does:** If `input[]` is empty, queries the code graph (keyword + optional semantic embeddings) to suggest the most relevant files. Populates the task's input list with the top matches and records the number of embedding-assisted hits for observability.
-
-    **What it controls:** The files the LLM sees as readable context. Providing an explicit `input[]` in your task skips this step entirely — the graph is only consulted when `input` is absent.
-
-    ```bash
-    orchestos context suggest "fix auth login flow"   # Preview suggestions
-    orchestos task run ./my-project --explain <id>    # Dry-run: show suggestions, 0 tokens
+    orchestos spec draft   add-button
+    orchestos spec lint    add-button
+    orchestos spec approve add-button
     ```
   </Step>
 
-  <Step title="5. skill-route">
-    **What it does:** Loads the skill YAML file identified by the task's `skill` field and writes compiled skill guidelines into the context.
-
-    **What it controls:** Domain-specific coding standards injected into the system prompt. A `typescript-strict` skill might require explicit return types; a `react` skill might forbid class components. Skills are composable and can target specific languages.
-
-    ```bash
-    orchestos skill list                          # List compiled skills
-    orchestos skill fetch --language typescript   # Fetch a curated skill from the registry
-    ```
+  <Step title="Sandbox setup">
+    Creates a git worktree for the task and points every later file operation at it. See [Sandbox](/concepts/sandbox).
   </Step>
 
-  <Step title="6. tool-policy">
-    **What it does:** Reads `allowed_tools` from the active skill and records the permitted tool list in the run context.
-
-    **What it controls:** Which tool IDs the LLM is permitted to invoke during the run. An empty list means no restriction. This step always runs after `skill-route` because it depends on the loaded skill.
-  </Step>
-
-  <Step title="7. constitution-load">
-    **What it does:** Reads `CONSTITUTION.md` from the project root (if present) and builds a structured block that lists `ALLOWED`, `FORBIDDEN`, and `REQUIRE_CONFIRMATION` rules.
-
-    **What it controls:** Hard project-wide rules the LLM must follow, such as never modifying `.env` files, never deleting files, or always asking before touching a schema migration file.
-
-    ```markdown
-    # CONSTITUTION.md
-    ## ALLOWED
-    - Modify files under src/
-
-    ## FORBIDDEN
-    - Modify .env files
-    - Delete files
-
-    ## REQUIRE_CONFIRMATION
-    - Any change to src/db/schema.ts
-    ```
-
-    <Tip>
-      You don't need to reference `CONSTITUTION.md` in any config. Place it at the project root and OrchestOS picks it up automatically on every run.
-    </Tip>
-  </Step>
-
-  <Step title="8. context-source">
-    **What it does:** Chooses between `CONTEXT.md` (compressed, ~500 tokens) and `AGENTS.md` (full, ~2000 tokens) as the project context block and records which source was used.
-
-    **What it controls:** The baseline project description every task receives. If `CONTEXT.md` exists, it takes priority. Generate it with `orchestos context compress` to reduce per-run token costs.
-
-    ```bash
-    orchestos context compress ./my-project   # Generates CONTEXT.md (~500 tokens)
-    ```
-  </Step>
-
-  <Step title="9. instinct-apply">
-    **What it does:** Queries the instincts store for all entries with `confidence >= 0.8` and `verified: true`. Formats them into an instincts block and writes it into the context.
-
-    **What it controls:** Learned behavioral nudges injected into the system prompt. Instincts encode patterns like "WHEN task uses Stripe THEN import from src/billing/stripe.ts" — they encode your codebase's conventions without requiring you to repeat them in every task description.
-
-    ```bash
-    orchestos instinct add "WHEN task uses Stripe THEN import from src/billing/stripe.ts" "add context"
-    orchestos instinct review    # Review auto-proposed instincts (confidence 0.6, unverified)
-    orchestos instinct approve <id>   # Set verified=true, bump confidence
-    ```
-  </Step>
-
-  <Step title="10. prompt-build">
-    **What it does:** Assembles the final system prompt and user message from all resolved context fields: project context, constitution block, skill instructions, instinct block, input file contents, task description, and output contract declaration.
-
-    **What it controls:** The exact prompt the LLM receives. This step is read-only with respect to config — it only assembles what the previous nine steps have already resolved.
+  <Step title="Executor resolution">
+    Picks the agent and model that will run the task: the task's own `engine` / `executor_model` if set, otherwise the Executor role. The reviewer comes from the Reviewer role. See [Model routing](/reference/models).
   </Step>
 </Steps>
 
-## What this means for you
+## The middleware chain
 
-The middleware chain makes the LLM's input fully traceable and configurable through files you own:
+<Steps>
+  <Step title="memory-fetch">
+    If the task has no `input[]`, queries the code graph (keyword score, plus semantic embeddings when available) and fills `input[]` with the best matches. It records how many came from embeddings (`embed_hits`). An explicit `input[]` skips this step.
+
+    ```bash
+    orchestos context suggest "fix auth login flow"   # preview suggestions
+    ```
+  </Step>
+
+  <Step title="skill-route">
+    Loads the skill named in the task's `skill` field and renders its guidelines — the same renderer used to compile skills for Claude Code, Cursor, and OpenAI.
+
+    ```bash
+    orchestos skill list
+    ```
+  </Step>
+
+  <Step title="roadmap-context">
+    Adds the engineering guides that apply to the task's output files (baseline, disciplines, and language guides) and the detected project profile. It blocks the task when the output needs a toolchain that is missing — for example, `.rs` files without `cargo` or `.go` files without `go` — because the mandatory checks could not run.
+  </Step>
+
+  <Step title="context-inject">
+    Chooses the project context block: `CONTEXT.md` (compressed, ~500 tokens) when it exists, otherwise `AGENTS.md`. The source and its estimated size are recorded in the run.
+
+    ```bash
+    orchestos context compress ./my-project   # generates CONTEXT.md
+    ```
+  </Step>
+
+  <Step title="instinct-apply">
+    Adds instincts with `confidence >= 0.8` and `verified: true` from the project's instinct store.
+
+    ```bash
+    orchestos instinct add "WHEN task uses Stripe THEN import from src/billing/stripe.ts" "add context"
+    orchestos instinct review
+    ```
+  </Step>
+</Steps>
+
+## After the chain
+
+- **Constitution load** — reads `CONSTITUTION.md` from the project root, if present, and builds the `ALLOWED` / `FORBIDDEN` / `REQUIRE_CONFIRMATION` block.
+- **Prompt build** — assembles the final prompt from the project context, constitution, skill guidelines, roadmap guides, instincts, input files, task description, and output contract.
+
+## What this means for you
 
 | What you want to control | How to do it |
 |---|---|
-| Which files the LLM reads | `input[]` in `tasks.yaml`, or let the graph suggest |
-| Which files the LLM may write | `output[]` in `tasks.yaml` |
-| Which LLM runs the task | `executor` / `executor_model` in `tasks.yaml` |
-| Domain coding standards | Add a skill with `orchestos skill add` |
-| Project-wide rules | Edit `CONSTITUTION.md` |
-| Learned codebase conventions | Add or approve instincts |
-| Require spec approval before running | Set `requireSpec: true` in `orchestos.config.yaml` |
-| Reduce per-run token cost | Run `orchestos context compress` to produce `CONTEXT.md` |
+| Which files the executor reads | `input[]`, or let the graph suggest |
+| Which files the executor may write | `output[]` |
+| Which agent and model run the task | The Executor role, a task rule, or `engine` / `executor_model` on the task |
+| Domain coding standards | A skill, via the task's `skill` field |
+| Project-wide rules | `CONSTITUTION.md` |
+| Learned conventions | Instincts |
+| Require spec approval | `requireSpec: true` |
+| Smaller project context | `orchestos context compress` |
 
-Every one of these controls is a static file you can commit, review, and version alongside your code. There is no hidden prompt injection — the full assembled prompt is visible in dry-run mode:
+Preview the result without calling any model:
 
 ```bash
 orchestos task run ./my-project --explain <task-id>
 ```
-
-This command runs the entire enrichment chain, prints the assembled prompt, and exits without making any LLM calls or spending any tokens.
