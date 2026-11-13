@@ -1,159 +1,51 @@
 ---
-title: "Sandbox: Isolated Git Worktrees for Safe Task Execution"
+title: "Sandbox"
 sidebarTitle: "Sandbox"
-description: "Learn how OrchestOS uses isolated git worktrees for every task run, ensuring failures never leave partial or broken writes on your main branch."
+description: "Run tasks in git worktrees and understand merge and fallback behavior."
 ---
 
-Every task in OrchestOS runs inside an isolated git worktree — a separate checkout of your repository that shares the object store with your main branch but has its own working directory. The LLM writes files, checks run, and the QA LLM evaluates the result, all inside that worktree. Only when every gate passes does OrchestOS fast-forward-merge the worktree branch back to your main branch. If anything fails — a contract violation, a failed typecheck, a rejected acceptance criterion — the worktree is discarded. Your main branch never sees a partial result.
+The default sandbox mode is `auto`. In a git repository on a branch, OrchestOS uses a separate worktree for the task. Without git or a usable branch, it falls back to the current directory and warns you. A dirty git tree blocks worktree execution before the attempt starts.
 
-## How the worktree is created
+## Prepare the project
 
-When OrchestOS starts a task, it sets up an isolated sandbox before any LLM call is made. It:
+Commit your changes before a worktree run. In the dashboard, **Commit & Run** lets you select the files to commit before starting the task. A dirty tree leaves the task `pending` with an `uncommitted changes:` reason.
 
-1. Verifies the project is a git repository.
-2. Creates a new branch named `orchestos/<task-id>/<timestamp>` from your base branch.
-3. Adds a worktree at `.orchestos/worktrees/<task-id>-<timestamp>` pointing to that branch.
-4. Directs all subsequent file operations — context loading, LLM writes, and checks — to that worktree path.
+Open **Settings → your project → General** to choose a base branch and a setup script. The setup script runs when OrchestOS creates the worktree. If you omit the base branch, it uses the current branch.
 
-Your working directory is never touched until the merge step.
+## Derived files
 
-## End-to-end flow
+You can declare exact generated file paths:
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                          TASK START                             │
-│  tasks.yaml declares output[], checks[], acceptance_criteria[]  │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │
-                               ▼
-                 ┌─────────────────────────┐
-                 │  git worktree created   │
-                 │  branch: orchestos/<id> │
-                 │  isolated from main     │
-                 └────────────┬────────────┘
-                              │
-                              ▼
-                 ┌─────────────────────────┐
-                 │  snapshot_before taken  │
-                 │  (SHA-1 hash per file)  │
-                 └────────────┬────────────┘
-                              │
-                              ▼
-                 ┌─────────────────────────┐
-                 │      LLM call           │
-                 │  writes files inside    │
-                 │  worktree only          │
-                 └────────────┬────────────┘
-                              │
-                              ▼
-                 ┌─────────────────────────┐
-                 │   contract check        │◄── any write outside output[]?
-                 │   output[] enforced     │         │
-                 └────────────┬────────────┘         │ VIOLATION
-                              │ PASS                 ▼
-                              │            ┌──────────────────────┐
-                              │            │  worktree discarded  │
-                              │            │  task → failed       │
-                              │            └──────────────────────┘
-                              ▼
-                 ┌─────────────────────────┐
-                 │  deterministic checks   │◄── typecheck / tests fail?
-                 │  checks[] shell cmds    │         │
-                 └────────────┬────────────┘         │ FAIL
-                              │ PASS                 ▼
-                              │            ┌──────────────────────┐
-                              │            │  files reverted      │
-                              │            │  task → retry        │
-                              │            └──────────────────────┘
-                              ▼
-                 ┌─────────────────────────┐
-                 │     QA LLM call         │◄── acceptance_criteria fail?
-                 │  evaluates each         │         │
-                 │  acceptance criterion   │         │ FAIL
-                 └────────────┬────────────┘         ▼
-                              │ PASS       ┌──────────────────────┐
-                              │            │  files reverted      │
-                              │            │  task → retry/perm   │
-                              │            └──────────────────────┘
-                              ▼
-                 ┌─────────────────────────┐
-                 │  snapshot_after taken   │
-                 │  merge --ff-only        │
-                 │  to base branch         │
-                 └────────────┬────────────┘
-                              │
-                              ▼
-                 ┌─────────────────────────┐
-                 │  worktree cleaned up    │
-                 │  task → done            │
-                 └─────────────────────────┘
+```yaml
+sandbox:
+  derivedFiles:
+    - reports/generated.json
 ```
 
-## Merge strategy
+Sandbox setup can discard changes to these tracked files so they do not block a run or merge. Only list files you can regenerate. The loader rejects absolute paths, parent traversal, and directory paths.
 
-On QA pass, OrchestOS merges using `--ff-only` (fast-forward only). This keeps the history linear — the worktree's commits appear directly on the base branch with no merge commit. If the base branch has diverged since the worktree was created, OrchestOS attempts a rebase of the worktree branch before retrying the fast-forward merge.
+## Execution and merge
 
-On any failure, the worktree directory is removed and the branch is deleted. No uncommitted state escapes.
+The executor and checks operate inside the task worktree. The reviewer runs when criteria, an applicable review gate, or the noncoding profile requires it. A successful run merges task changes into the base branch.
 
-## Snapshot evidence
+The commit merge path first attempts a fast-forward. If the base has advanced, it rebases the task branch and retries. The merge implementation also supports squash. When the base branch is not checked out in your working directory, it advances that branch without switching your checkout.
 
-Before the LLM writes anything, OrchestOS takes a `snapshot_before`: a SHA-1 hash of every file in `output[]` (or `'absent'` if the file does not yet exist). After a successful QA pass it takes a `snapshot_after`. Both snapshots are stored in the SQLite run record.
-
-This gives you a complete audit trail:
-
-- You can verify that a specific file was changed by a specific task.
-- You can detect if a file was touched by something outside OrchestOS between runs.
-- `orchestos runs --detail <run-id>` shows the before/after snapshot and the full file diff.
-
-## Debugging failures with --keep-worktree
-
-By default a failed worktree is discarded immediately. To inspect the state after a failure — for example to understand why a typecheck failed — pass `--keep-worktree`:
+Failed worktrees are normally cleaned up. To retain one for inspection:
 
 ```bash
-orchestos task run ./my-project --id add-button --keep-worktree
+orchestos task run --id add-health --keep-worktree
 ```
 
-The worktree and its branch remain at `.orchestos/worktrees/<task-id>-<timestamp>` until you clean them up manually. You can navigate to the directory, inspect the files the LLM wrote, and run the failing check yourself.
+`--keep-worktree` implies worktree mode. Inspect the path printed in the run log. You can inspect snapshots and file evidence with `orchestos runs --detail <run-id>`.
 
-<Warning>
-  Worktrees kept with `--keep-worktree` are not cleaned up automatically. Run `git worktree list` to see all active worktrees, and `git worktree remove --force <path>` followed by `git branch -D <branch>` to clean up manually.
-</Warning>
-
-## Why this matters
-
-<CardGroup cols={2}>
-  <Card title="No partial writes" icon="shield-check" href="/concepts/contracts">
-    A failed task leaves your main branch exactly as it was before the run started. There is no such thing as a half-applied change from an OrchestOS task.
-  </Card>
-  <Card title="Safe parallelism" icon="code-branch" href="/guides/sub-agents">
-    Sub-agent plans run each sub-task in its own worktree. Branches are serialized through a git lock before merging, so concurrent tasks never corrupt each other's history.
-  </Card>
-  <Card title="Auditable history" icon="clock-rotate-left" href="/guides/dashboard">
-    Every successful task produces a clean commit on your base branch with a message like `orchestos: changes from orchestos/add-button/1718000000000`. The worktree branch name is the run trace.
-  </Card>
-  <Card title="Debuggable failures" icon="bug" href="/reference/troubleshooting">
-    Use `--keep-worktree` to preserve the exact file state the LLM produced. You can reproduce any check failure without re-running the LLM.
-  </Card>
-</CardGroup>
-
-## Sandbox and git requirements
-
-The worktree sandbox needs a git repository with a branch checked out. The default mode, `--sandbox auto`, uses a worktree when it can. Outside a git repository, on a detached HEAD, or with `--sandbox cwd`, OrchestOS falls back to writing directly in the project and prints a warning. Check the run log for `sandbox: worktree created` to confirm a run was isolated.
-
-<Warning>
-  The worktree is the only sandbox. There is no VM or container isolation, and CLI agents run with your user's permissions.
-</Warning>
+## Current-directory mode
 
 ```bash
-# Initialize git if you haven't already
-git init ./my-project
-git -C ./my-project add -A
-git -C ./my-project commit -m "initial commit"
-
-# Then initialize OrchestOS
-orchestos init ./my-project
+orchestos task run --id add-health --sandbox cwd
 ```
 
-<Note>
-  OrchestOS always creates the worktree from your **current** base branch at the moment the task starts. Make sure your base branch is clean and up to date before running `orchestos task run`.
-</Note>
+This writes directly in your project directory and has no worktree isolation. Use it only when you intend that behavior.
+
+## Undo a completed run
+
+Use the undo control on the task card to revert a merged run. The card displays **Undone** and the resulting commit ID. Review the current repository state before undoing changes that later work depends on.

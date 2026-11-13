@@ -1,333 +1,92 @@
 ---
-title: "OrchestOS Troubleshooting — Common Errors and Fixes"
+title: "Troubleshooting"
 sidebarTitle: "Troubleshooting"
-description: "Actionable fixes for common OrchestOS problems — contract violations, stuck tasks, QA failures, API key errors, cost spikes, and embedding issues."
+description: "Resolve authentication, sandbox, task, check, and CLI failures."
 ---
 
-Most OrchestOS failures fall into a small number of patterns: the LLM tried to write a file outside the declared contract, QA criteria are too vague, the project wasn't initialized, or an API key is missing. The accordions below cover each issue with a concrete fix. For failures that don't appear here, run `orchestos runs --detail <run-id>` to inspect the full evidence record for a specific run.
+## A role is unassigned
 
-<Accordion title="Task fails with 'contract violation'">
-  **Symptom:** The task fails immediately after the LLM call and you see a message like `CONTRACT VIOLATION — task NOT applied`. The run record shows files in `files_blocked`.
+A `RoleUnassignedError` uses this message pattern:
 
-  **Cause:** The LLM tried to write to a file that is not listed in `output[]` for that task. OrchestOS enforces the output contract strictly — if any write is outside the declared list, the entire run is reverted and nothing is written.
+```text
+Executor role is unassigned — assign it in Settings → Model routing
+```
 
-  **Fix:**
+The role name changes with the failing call. Assign its agent and model in **Settings → Model routing**. Check the resolved configuration:
 
-  1. Run `orchestos runs --detail <run-id>` to see which files were attempted vs. authorized vs. blocked.
-  2. Add the blocked file path to `output[]` in `tasks.yaml` if the write was legitimate.
-  3. If the LLM is generating unexpected files, narrow the `description` to be more specific about what should be created.
+```bash
+orchestos config show -p ./my-project
+```
 
-  ```yaml
-  # Before — too broad a description can cause the LLM to generate extra files
-  output:
-    - src/components/Button.tsx
+A project config replaces the global fallback rather than merging with it. Invalid assignments are ignored with a warning. The role loader accepts `claude`, `codex`, `opencode`, `api`, and custom global CLI IDs; it does not accept `local`.
 
-  # After — add any file the LLM legitimately needs to write
-  output:
-    - src/components/Button.tsx
-    - src/components/Button.module.css   # LLM was trying to write this too
-  ```
+## Dashboard returns 401 or 403
 
-  Keeping `output[]` narrow is intentional — it is the primary safety mechanism. Only expand it when you've confirmed the additional file is genuinely part of the task scope.
-</Accordion>
+`401` with `dashboard token required` means the API token is missing or wrong. Open the full `#t=<token>` URL printed by `orchestos dashboard`. If you set `ORCHESTOS_DASHBOARD_TOKEN`, use that server's current token.
 
-<Accordion title="Task stuck in failed_permanent">
-  **Symptom:** `orchestos task status` shows a task with `failed_permanent` status. It won't be picked up by `orchestos task run`.
+API clients send `x-orchestos-token`. Host must be `localhost:<port>` or `127.0.0.1:<port>`; Origin, when present, must match an allowed HTTP origin. Invalid Host or Origin returns `403`.
 
-  **Cause:** The task failed QA 3 times in a row. OrchestOS stops retrying to avoid burning tokens on a task that has a systemic problem.
+The installer opens the plain local URL. On your first visit, copy the authenticated URL from the terminal.
 
-  **Fix:**
+## The working tree is dirty
 
-  1. Run `orchestos task diagnose <task-id>` to see the automatically generated failure analysis. OrchestOS reads the last 3 run records and classifies the failure pattern.
+Worktree execution requires a clean tree. The task stays `pending` with an `uncommitted changes:` reason. Commit the intended changes, or use **Commit & Run** in the task card to select files before starting.
 
-  ```bash
-  orchestos task diagnose my-task-id
-  ```
+Only declare regenerable files in `sandbox.derivedFiles`: sandbox setup may discard their tracked changes. Without git or a usable base branch, `auto` can fall back to `cwd`, which has no worktree isolation.
 
-  The diagnosis output categorizes the failure as one of: `deterministic_check` (compilation/test errors), `qa_specific_criterion` (one criterion consistently failing), `parse_error` (malformed LLM output), or `scope_creep` (too many files being suggested as context).
+## A task is interrupted
 
-  2. Fix the root cause — tighten `acceptance_criteria`, fix compilation errors in `checks[]`, or adjust `output[]` scope.
-  3. Reset the task status to `pending` by editing `tasks.yaml` directly:
+An interrupted card offers **Resume**. Read the last report and check project state before resuming. A failed card instead shows the cause, check output, QA reason, and executor report when available.
 
-  ```yaml
-  status: pending
-  retry_count: 0
-  ```
+## Checks fail or time out
 
-  Then run `orchestos task run ./my-project --id <task-id>` to retry.
-</Accordion>
+Inspect the recorded command, working directory, exit code, and output:
 
-<Accordion title="QA keeps failing">
-  **Symptom:** The task passes `checks[]` but the QA LLM rejects it on every attempt. `retry_count` climbs toward 3.
+```bash
+orchestos runs --detail <run-id>
+```
 
-  **Cause:** Usually one of three things: acceptance criteria are too vague or check something the LLM can't verify in the written files; `output[]` is so broad that the LLM writes inconsistent results; or the task description is ambiguous. Note that the QA call is itself an LLM call and is subject to the same non-determinism as the executor — a borderline criterion may pass on one run and fail on the next.
+The default timeout is `60000` milliseconds. Set `checks[].timeout_ms` for a check that needs more time. `cwd` must stay inside the project. Split commands into separate checks: the parser rejects shell composition tokens such as `&&` and `;`.
 
-  **Fix:**
+Check failures normally return the task to `pending` with an incremented retry count. At the third failed attempt the task becomes `failed_permanent`.
 
-  1. **Narrow `output[]`** — the more files the LLM can write, the harder it is to be consistent. If possible, split a large task into smaller tasks each with 1–2 output files.
+## A CLI call fails
 
-  2. **Improve acceptance criteria** — each criterion should be observable in the output files. Avoid criteria like `"WHEN the code is reviewed THEN it looks clean"`. Write `"WHEN the function is called with null THEN it throws TypeError"` instead.
+Read the task card's failure classification and the recorded provider error.
 
-  3. **Use `--explain` to preview** before running:
+| Failure | Action |
+| --- | --- |
+| Usage limit / quota | Restore credits or wait for your plan's quota window. |
+| Rate limit | Wait for the provider limit to reset. Diagnosis names this pattern `rate_limit`. |
+| Sign-in failed | Sign in to the selected CLI again. |
+| Timed out | Inspect provider response time and the configured CLI timeout. |
+| Invalid model | Choose a model available to the selected agent. |
+| Network error / provider overloaded | Restore connectivity or wait for provider capacity. |
+| No response / CLI exited | Read the process error and exit details before running again. |
 
-  ```bash
-  orchestos task run ./my-project --explain <task-id>
-  ```
+`external.timeoutMs` defaults to `1200000` and accepts integers from `60000` to `86400000`. A detected binary alone does not prove that task execution or chat is supported for that CLI.
 
-  This shows exactly which files the LLM will be given as context and which model will be used — no tokens spent. If the suggested context looks wrong, add explicit `input[]` entries.
+## Diagnose a failed task
 
-  4. **Check the QA reason** in the run detail:
+```bash
+orchestos task diagnose <task-id>
+orchestos task diagnose <task-id> --model <model>
+```
 
-  ```bash
-  orchestos runs --detail <run-id>
-  ```
+Diagnosis reads up to three recent runs. It uses the Auxiliary role unless you supply an OpenRouter model override. Patterns include `deterministic_check`, `qa_specific_criterion`, `parse_error`, `rate_limit`, `scope_creep`, and `unknown`. Suggestions do not edit your task.
 
-  The `## Acceptance criteria (LLM)` section shows which criterion failed and why the QA model rejected it.
-</Accordion>
+## No pending task is executable
 
-<Accordion title="Context window exceeded">
-  **Symptom:** The LLM call fails with a context length error, or the output is clearly truncated.
+Check `depends_on` and task status. Dependencies must reach `done`. Parsing rejects duplicate IDs but does not reject cycles. `task run --all` stops on failure or blockage and caps execution at 20 iterations.
 
-  **Cause:** The combined size of the system prompt, injected context files, and task description exceeds the model's context window. This often happens when `input[]` is omitted and the code graph suggests many large files.
+## A skill is missing
 
-  **Fix:**
+Check **Settings → your project → Skills**. Enable user-library skills for the project. Runtime reads YAML from the project, library, or installation; exporting with `skill build` is not an activation step.
 
-  1. **Add explicit `input[]`** to override the graph suggestion and limit context to only what's needed:
+## Spec approval fails
 
-  ```yaml
-  input:
-    - src/auth/middleware.ts   # Only the files that are actually relevant
-    - src/types/user.ts
-  ```
+Approve a pending design with `spec approve-design`, resolve clarification, and supply real criteria under `## Criterios de aceptación` before `spec approve`. `spec lint` reports advisory formatting findings separately.
 
-  2. **Run context compression** to shrink the project context from ~2000 tokens (AGENTS.md) to ~500 tokens (CONTEXT.md):
+## Installation command is missing
 
-  ```bash
-  orchestos context compress ./my-project
-  ```
-
-  OrchestOS automatically uses `CONTEXT.md` when it exists. Token savings are visible in `orchestos runs --detail <run-id>` under the `## Cost` section.
-
-  3. **Reduce `output[]` scope** — a task with 10 output files generates a longer system prompt (one contract placeholder per file). Split into multiple focused tasks.
-
-  4. **Preview context size** before running:
-
-  ```bash
-  orchestos task run ./my-project --explain <task-id>
-  ```
-</Accordion>
-
-<Accordion title="'No indexed project' error">
-  **Symptom:** You see an error like `No indexed project at <path>. Run: orchestos init` when running context or graph commands.
-
-  **Cause:** `orchestos init` has not been run for this project, or it was run on a different path.
-
-  **Fix:**
-
-  ```bash
-  orchestos init ./my-project
-  ```
-
-  This detects your stack, writes `AGENTS.md` and `context.json`, saves the project record to `~/.orchestos/db.sqlite`, and indexes the code graph. You only need to run this once per project. After significant code changes, re-index with:
-
-  ```bash
-  orchestos index ./my-project
-  ```
-</Accordion>
-
-<Accordion title="Bun not found">
-  **Symptom:** Running any `orchestos` command produces `bun: command not found` or similar.
-
-  **Cause:** Bun is either not installed or not on your `PATH` in the current shell session.
-
-  **Fix:**
-
-  1. Install Bun if you haven't already:
-
-  ```bash
-  curl -fsSL https://bun.sh/install | bash
-  ```
-
-  2. Restart your terminal, or source your shell config file to update `PATH`:
-
-  ```bash
-  source ~/.bashrc   # or ~/.zshrc
-  ```
-
-  3. Verify:
-
-  ```bash
-  bun --version   # Should print 1.1 or higher
-  ```
-
-  OrchestOS requires Bun ≥ 1.1. After confirming Bun is available, you can optionally add an alias so you don't need to type the full path:
-
-  ```bash
-  # Add to ~/.bashrc or ~/.zshrc
-  alias orchestos="bun /path/to/orchestos/src/cli.ts"
-  ```
-</Accordion>
-
-<Accordion title="A role is unassigned">
-  **Symptom:** A task or the chat stops with `Rol '<role>' sin asignar: elígelo en Settings → Model routing`.
-
-  **Cause:** The role has no assignment. OrchestOS never picks a model for you.
-
-  **Fix:** Open **Settings → Model routing** and assign agent and model to that role, or add it under `roles:` in `orchestos.config.yaml`. See [Model routing](/reference/models).
-</Accordion>
-
-<Accordion title="A CLI agent fails or is not found">
-  **Symptom:** A role set to `claude`, `codex`, or `opencode` fails immediately, or `orchestos setup` does not list the CLI.
-
-  **Cause:** The binary is not on your `PATH`, or you are not logged in.
-
-  **Fix:**
-
-  1. Run the CLI once by itself (`claude`, `codex`, or `opencode`) and complete its login.
-  2. Run `orchestos setup` to confirm OrchestOS detects it.
-  3. If a task pins `engine` without `executor_model` and the Executor role uses a different CLI, the run fails with an error naming the mismatch. Add `executor_model` to the task, or change the Executor role.
-</Accordion>
-
-<Accordion title="API key errors">
-  **Symptom:** `401 Unauthorized`, `Invalid API key`, or `No API key found`.
-
-  **Cause:** A role uses `agent: api` (or a task runs as an API call) and the key for its provider is missing or wrong. CLI agents never need these keys.
-
-  **Fix:**
-
-  1. Run `orchestos config show ./my-project` to see which roles use `agent: api` and with which provider.
-  2. Check `~/.orchestos/.env`. Key prefixes: OpenRouter `sk-or-`, Anthropic `sk-ant-`, OpenAI `sk-`.
-
-  ```bash
-  OPENROUTER_API_KEY=sk-or-...    # agent: api, default provider
-  ANTHROPIC_API_KEY=sk-ant-...    # provider: anthropic
-  OPENAI_API_KEY=sk-...           # embeddings or provider: openai
-  ```
-
-  3. Or switch the role to a CLI agent in **Settings → Model routing** and drop the key.
-</Accordion>
-
-<Accordion title="Usage is unexpectedly high">
-  **Symptom:** You burn through your CLI plan's quota, or your API bill is higher than expected.
-
-  **Cause:** Each task run makes at least 2 model calls (execute + QA). Every retry adds 2 more, so a task with 3 retries costs 6 calls. `adversarialQA` and `refuterQA` add QA calls when enabled. With CLI agents these calls use your plan's quota; only `agent: api` roles cost money per call. There is no budget cap or pre-run estimate.
-
-  **Fix:**
-
-  1. **Assign a lighter model** to the Executor or Reviewer role in **Settings → Model routing**, or pin a lighter `executor_model` on simple tasks.
-  2. **Add `checks[]` to fail fast** before the QA call. A `bun run typecheck` check that catches a compile error saves the QA call on every bad attempt.
-  3. **Preview before running** — `--explain` calls no model:
-
-  ```bash
-  orchestos task run ./my-project --explain my-task
-  ```
-
-  4. **Check usage** in **Settings → Usage**, or per run with `orchestos runs --detail <run-id>`.
-  5. **Use `--max-cost`** as a circuit breaker for `orchestos run --graph`:
-
-  ```bash
-  orchestos run --graph --max-cost 0.50
-  ```
-</Accordion>
-
-<Accordion title="Worktree conflicts">
-  **Symptom:** You see errors about git worktrees during a task run, or `git worktree list` shows stale entries after a failed run.
-
-  **Cause:** OrchestOS runs each task in an isolated git worktree. If a run exits unexpectedly, the worktree may not be cleaned up. Note that `snapshot_before` captures file content hashes before each run so OrchestOS can restore files on QA failure, but if the process crashes mid-write, no automatic rollback happens — use git to recover.
-
-  **Fix:**
-
-  1. **Debug with `--keep-worktree`** to inspect the state after a failure:
-
-  ```bash
-  orchestos task run ./my-project --id <task-id> --keep-worktree
-  ```
-
-  This keeps the worktree on disk so you can inspect the files the LLM wrote before they were reverted.
-
-  2. **Clean up stale worktrees** manually:
-
-  ```bash
-  git worktree list                           # See all worktrees
-  git worktree remove <path-to-worktree>      # Remove a specific one
-  git worktree prune                          # Remove stale records
-  ```
-
-  3. If OrchestOS complains about a worktree path conflict on the next run, the prune command above usually resolves it.
-</Accordion>
-
-<Accordion title="Embeddings not working / context suggest returns no results">
-  **Symptom:** `orchestos context suggest` returns no results, or `orchestos task run --explain` shows no graph suggestions. The `embed_hits` counter in run details is always 0.
-
-  **Cause:** Semantic embeddings require either an OpenAI API key (for `text-embedding-3-small`) or a local Ollama instance. Without one of these, `orchestos index` stores keyword-based edges only, and similarity search falls back to keyword matching exclusively. The code graph also only tracks import relationships between files — it does not index function calls, class hierarchies, or exported symbols. For tasks like "rename function X across all callers", the graph cannot identify callers automatically.
-
-  **Fix:**
-
-  1. **Add an OpenAI API key** to `~/.orchestos/.env`:
-
-  ```bash
-  echo "OPENAI_API_KEY=sk-..." >> ~/.orchestos/.env
-  ```
-
-  2. **Re-index the project** to generate embeddings now that the key is available:
-
-  ```bash
-  orchestos index ./my-project
-  ```
-
-  3. **Verify** — `orchestos index` output should now report an `embeddings` count:
-
-  ```
-  [index] indexed 84 files, 312 edges, 84 embeddings in 4231ms
-  ```
-
-  4. If you don't have an OpenAI key, you can use Ollama for local embeddings. OrchestOS will detect a running Ollama instance automatically. Without either provider, keyword-only matching still works — it just won't find semantically related files that don't share tokens with the task description.
-
-  5. **For tasks that need precise cross-file symbol tracking** (renaming a function, finding all callers), add explicit `input[]` entries to the task rather than relying on graph suggestions. The graph tracks imports, not symbols.
-</Accordion>
-
-<Accordion title="Tasks run sequentially — no parallel execution">
-  **Symptom:** You have 10 independent tasks and they run one at a time. You expected parallel execution.
-
-  **Cause:** OrchestOS is sequential by design. Tasks run one after the other, even when they have no `depends_on` relationship. There is no built-in parallelism.
-
-  **Fix:**
-
-  1. **Order tasks to maximize throughput** — put the longest-running tasks first in `tasks.yaml` so they complete while you're reviewing earlier results.
-
-  2. **Run tasks manually in separate terminals** — OrchestOS uses SQLite for state, so you can run two separate project directories in parallel in different shells. Within a single project, concurrent `task run` calls are not supported.
-
-  3. **Use `--all` for sequential automation** — if you want to walk away and let OrchestOS process the full backlog:
-
-  ```bash
-  orchestos task run ./my-project --all
-  ```
-
-  This runs every pending task in topological order, stopping if any task reaches `failed_permanent`.
-</Accordion>
-
-<Accordion title="--clarify doesn't trigger / asks for the wrong thing">
-  **Symptom:** `--clarify` doesn't ask a question when you expect it to, or it asks when the task seems clear.
-
-  **Cause:** The clarify heuristic uses keyword matching only — it looks for words like "optimize", "improve", or "fix" without an explicit target file or clear scope in `input[]`. It does not use an LLM call or semantic analysis. If a task has explicit `input[]` entries, clarify will not trigger even if the description is vague.
-
-  **Fix:**
-
-  1. **To force a clarification prompt**, use `--clarify <task-id>` explicitly — it always opens the prompt regardless of heuristic:
-
-  ```bash
-  orchestos task run ./my-project --clarify add-button
-  ```
-
-  2. **To prevent unwanted clarify prompts**, add explicit `input[]` to the task. A task with explicit inputs is treated as unambiguous:
-
-  ```yaml
-  - id: improve-performance
-    input:
-      - src/db/queries.ts    # Explicit input suppresses clarify heuristic
-    output:
-      - src/db/queries.ts
-  ```
-
-  3. The clarify prompt is a single question with no follow-up. Your answer is appended to the task `description` before the LLM call.
-</Accordion>
+Use `bun /path/to/orchestos/src/cli.ts` directly or define the shell alias in [Installation](/installation). Run `orchestos setup` from the installation directory to inspect dependencies and AI availability.

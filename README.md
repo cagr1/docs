@@ -1,55 +1,37 @@
-# Mintlify Starter Kit
+# OrchestOS documentation
 
-Use the starter kit to get your docs deployed and ready to customize.
+This repository contains the English Mintlify documentation for [OrchestOS](https://github.com/cagr1/orchestos).
 
-Click the green **Use this template** button at the top of this repo to copy the Mintlify starter kit. The starter kit contains examples with
+Pages use MDX with YAML frontmatter. Navigation and site settings live in `docs.json`.
 
-- Guide pages
-- Navigation
-- Customizations
-- API reference pages
-- Use of popular components
+## Run OrchestOS
 
-**[Follow the full quickstart guide](https://starter.mintlify.com/quickstart)**
-
-## AI-assisted writing
-
-Set up your AI coding tool to work with Mintlify:
+Clone the product repository and run its installer:
 
 ```bash
-npx skills add https://mintlify.com/docs
+git clone https://github.com/cagr1/orchestos
+cd orchestos
+bash install.sh
 ```
 
-This command installs Mintlify's documentation skill for your configured AI tools like Claude Code, Cursor, Windsurf, and others. The skill includes component reference, writing standards, and workflow guidance.
+You need Bun for the runtime and dependencies, git for worktree isolation, and a signed-in supported CLI or configured API credentials. The installer checks Bun, installs dependencies, builds the dashboard, and starts it. Open the full URL printed by the CLI, including `#t=<token>` for your first visit; the installer opens the plain local URL.
 
-See the [AI tools guides](/ai-tools) for tool-specific setup.
+On Windows, run `install.ps1` or `install.bat`: **Experimental — not yet tested on Windows**.
 
-## Development
+Assign roles in **Settings → Model routing**, add a project, and request a change in **Dev** chat. LLM review runs when criteria, an applicable review gate, or your noncoding profile requires it. Inspect failed-task evidence in the card. Interrupted tasks offer **Resume**.
 
-Install the [Mintlify CLI](https://www.npmjs.com/package/mint) to preview your documentation changes locally. To install, use the following command:
+## Preview these docs
 
-```
-npm i -g mint
-```
+From this documentation repository:
 
-Run the following command at the root of your documentation, where your `docs.json` is located:
-
-```
-mint dev
+```bash
+npx --yes mint dev
 ```
 
-View your local preview at `http://localhost:3000`.
+## Check links
 
-## Publishing changes
+```bash
+npx --yes mint broken-links
+```
 
-Install our GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app) to propagate changes from your repo to your deployment. Changes are deployed to production automatically after pushing to the default branch.
-
-## Need help?
-
-### Troubleshooting
-
-- If your dev environment isn't running: Run `mint update` to ensure you have the most recent version of the CLI.
-- If a page loads as a 404: Make sure you are running in a folder with a valid `docs.json`.
-
-### Resources
-- [Mintlify documentation](https://mintlify.com/docs)
+Keep product behavior aligned with the OrchestOS source. Do not add screenshots or links for controls you have not verified.

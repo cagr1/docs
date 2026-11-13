@@ -1,122 +1,79 @@
 ---
-title: "Configuring OrchestOS: Roles, Config File, Keys, and Constitution"
+title: "Configuration"
 sidebarTitle: "Configuration"
-description: "Configure OrchestOS: assign the four roles, tune orchestos.config.yaml, add optional API keys in ~/.orchestos/.env, and define agent rules in CONSTITUTION.md."
+description: "Set role assignments, optional API keys, and machine-wide storage."
 ---
 
-OrchestOS has three configuration layers:
+Configure project behavior in `orchestos.config.yaml`. You can use `~/.orchestos/config.yaml` as a fallback. The first readable configuration file wins; project settings do not merge with the global file. Global `clis` declarations are loaded separately.
 
-- **`orchestos.config.yaml`** at the project root — role assignments and harness options. Most of it is editable from **Settings** in the dashboard.
-- **`~/.orchestos/.env`** — optional API keys, global to your machine.
-- **`CONSTITUTION.md`** at the project root — optional rules injected into every task prompt.
+## Assign roles
 
-## Roles
+Open **Settings → Model routing** to choose an agent and model for each role:
 
-Four roles decide which agent and model handle each kind of call:
+| Role | Used for |
+| --- | --- |
+| Orchestrator | Chat and task drafting. |
+| Executor | Task execution. |
+| Reviewer | Review criteria and applicable review gates. |
+| Auxiliary | Diagnosis, pattern analysis, and memory conflict judging. |
 
-```yaml
-config_version: 1
-roles:
-  orchestrator: { agent: claude, model: claude-opus-5-5, effort: medium }  # chat + task drafts
-  executor:     { agent: codex,  model: gpt-6-luna,      effort: medium }  # writes the files
-  reviewer:     { agent: codex,  model: gpt-6-luna,      effort: medium }  # QA verdict
-  auxiliary:    { agent: codex,  model: gpt-5.6-luna }                     # diagnosis, memory judge
+Role agents are `claude`, `codex`, `opencode`, `api`, and custom IDs from global `clis`. A missing assignment stops the call that needs it. See [Model routing](/reference/models).
+
+Inside **Model routing**, use the **Task rules** row to route drafted tasks by output glob or skill. Use **Executor** settings for API mode and execution limits.
+
+```bash
+orchestos config init ./my-project
+orchestos config show -p ./my-project
 ```
 
-`agent` is `claude`, `codex`, `opencode`, or `api`. Edit roles in **Settings → Model routing**, or by hand in the file. Nothing is hardcoded: each role uses exactly what is configured, and a missing role stops with an error asking you to assign it. Full details in [Model routing](/reference/models).
+`config init` writes a legacy model scaffold; assign any missing roles before running tasks. See the [config file reference](/reference/config) for its exact contents and ranges.
 
-## Other fields
+## Permissions
 
-```yaml
-requireSpec: false        # true = every task needs an approved spec before running
-apiMode: single-shot      # only for agent: api — single-shot | agentic
-agentic:
-  maxIterations: 15       # tool-use rounds per attempt when apiMode is agentic
-external:
-  timeoutMs: 1200000      # wall-clock limit for one CLI call (default 20 min)
-adversarialQA: false      # opt-in second judge after a QA pass
-refuterQA: false          # opt-in re-check after a QA fail, before spending a retry
-```
+Set `permissionMode: manual` to hold all chat-created tasks for approval. With the default `yolo`, tasks that touch existing files still wait for approval; tasks that only create files can start directly.
 
-See the [config file reference](/reference/config) for every field, including per-task agent rules.
+The composer's **Supervised**, **Auto-edit**, and **Full access** selector controls action approvals within a task. It is separate from approval to start the task. See [Dashboard](/guides/dashboard#approvals).
 
----
+## API keys
 
-## ~/.orchestos/.env
-
-API keys are optional. You need none if every role uses a CLI agent. OrchestOS loads this file at startup for every command.
+You need no API key for calls handled by a signed-in CLI. API calls use the corresponding provider key:
 
 ```bash
 # ~/.orchestos/.env
-OPENROUTER_API_KEY=sk-or-...    # roles with agent: api (default provider)
-ANTHROPIC_API_KEY=sk-ant-...    # direct Anthropic calls
-OPENAI_API_KEY=sk-...           # embeddings (text-embedding-3-small)
+OPENROUTER_API_KEY=
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
 ```
 
-<ParamField path="OPENROUTER_API_KEY" type="string">
-  Used by roles with `agent: api` when `provider` is omitted or set to `openrouter`. Get one at [openrouter.ai](https://openrouter.ai).
-</ParamField>
+| Key | Provider |
+| --- | --- |
+| `OPENROUTER_API_KEY` | `openrouter`, the default API provider. |
+| `ANTHROPIC_API_KEY` | `anthropic`. |
+| `OPENAI_API_KEY` | `openai`. |
 
-<ParamField path="ANTHROPIC_API_KEY" type="string">
-  Used by roles or tasks that call the Anthropic API directly. Get one at [console.anthropic.com](https://console.anthropic.com).
-</ParamField>
+You can manage keys under **Settings → API keys**. Keep the file outside your project repository.
 
-<ParamField path="OPENAI_API_KEY" type="string">
-  Used for `text-embedding-3-small` embeddings during `orchestos index`. When present, context suggestions are re-ranked by semantic similarity plus keyword matching. The effect is visible as `embed_hits` in `orchestos runs --detail`.
-</ParamField>
+## Environment variables
 
-<Note>
-  `.env` holds secrets. It lives in your home directory to stay outside every project repository. Do not commit it.
-</Note>
+| Variable | Purpose |
+| --- | --- |
+| `ORCHESTOS_HOME` | Overrides the home root. State lives under `<ORCHESTOS_HOME>/.orchestos`, not directly in the supplied directory. |
+| `ORCHESTOS_DASHBOARD_TOKEN` | Overrides the persisted dashboard token. |
+| `OS_ENABLE_EXEC_CODEX` | Set to `1` to accept legacy `executor: codex` in tasks. It is separate from `engine: codex`. |
+| `ORCHESTOS_API_URL` | Dashboard base URL for `skill curate`, `skill import`, and `skill fetch`; default `http://localhost:4242`. |
+| `OLLAMA_HOST` | Local-model host setting stored by the dashboard. Current local chat and model probes use `http://localhost:11434` directly; changing this setting does not redirect those calls. |
 
----
+## Stored files
 
-## CONSTITUTION.md
+| Path | Contents |
+| --- | --- |
+| `~/.orchestos/config.yaml` | Global fallback config and trusted custom CLI declarations. |
+| `~/.orchestos/.env` | Optional API credentials and settings. |
+| `~/.orchestos/db.sqlite` | Projects, runs, memory, and instincts. |
+| `~/.orchestos/dashboard-token` | Generated dashboard authentication token. |
+| `~/.orchestos/profile.json` | Whether you write code. The noncoding profile requires review. |
+| `~/.orchestos/skills/` | Your reusable skill library. |
+| `.orchestos/skills.json` | Skill-library activation for the project. |
+| `.orchestos/specs/` | Project specs. |
 
-`CONSTITUTION.md` is an optional file at your project root. OrchestOS injects its contents into every task prompt — no config needed.
-
-```bash
-orchestos constitution init ./my-project   # scaffold CONSTITUTION.md
-orchestos constitution show ./my-project   # print parsed rules
-```
-
-### Format
-
-```markdown
-# CONSTITUTION.md
-
-## ALLOWED
-- Modify files under src/
-
-## FORBIDDEN
-- Modify .env files
-- Delete files
-
-## REQUIRE_CONFIRMATION
-- Any change to src/db/schema.ts
-```
-
-<ParamField path="## ALLOWED" type="section">
-  Actions or paths the agent is explicitly permitted to touch.
-</ParamField>
-
-<ParamField path="## FORBIDDEN" type="section">
-  Actions or paths the agent must never touch. The agent sees these in its prompt and is instructed to refuse.
-</ParamField>
-
-<ParamField path="## REQUIRE_CONFIRMATION" type="section">
-  Files or actions that need a human checkpoint even when the task's contract permits the write.
-</ParamField>
-
-<Note>
-  The constitution is an instruction in the prompt. The hard boundary is the `output[]` contract, which OrchestOS enforces after the executor runs. See [Contracts](/concepts/contracts).
-</Note>
-
----
-
-## Inspect your config
-
-```bash
-orchestos config show ./my-project   # resolved config
-orchestos config init ./my-project   # scaffold a config file (does not overwrite)
-```
+All home paths above use `ORCHESTOS_HOME` when set. See [Skills](/guides/skills) and [Specs](/guides/specs).

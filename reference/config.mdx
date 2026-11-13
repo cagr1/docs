@@ -1,93 +1,79 @@
 ---
-title: "orchestos.config.yaml — OrchestOS Configuration File"
-sidebarTitle: "Config File"
-description: "All orchestos.config.yaml fields explained — the four roles, task rules, the requireSpec gate, API mode, CLI timeouts, and optional extra QA judges."
+title: "Configuration file reference"
+sidebarTitle: "Config file"
+description: "Configure roles, task routing, permissions, sandbox files, and custom CLIs."
 ---
 
-`orchestos.config.yaml` lives at the root of your project. It holds the role assignments and harness options. Most fields are editable from **Settings** in the dashboard; the file is the source of truth either way. If the file is absent, built-in defaults apply — but roles have no default, so assign them before running tasks.
+OrchestOS tries `<project>/orchestos.config.yaml`, then `~/.orchestos/config.yaml`, then built-in defaults. The first readable, parseable file wins. It does not merge project and global settings. Each selected file is resolved against defaults. Custom CLI declarations are always read separately from the global file.
 
-## Initializing and inspecting config
+## Create and inspect
 
 ```bash
-orchestos config init ./my-project   # scaffold orchestos.config.yaml (fails if it exists)
-orchestos config show ./my-project   # resolved config + which model each pending task would use
+orchestos config init ./my-project
+orchestos config show -p ./my-project
 ```
 
-## Full example
+`config init` refuses to overwrite an existing file. It writes the legacy `models` scaffold with OpenRouter `deepseek/deepseek-v4-flash` entries for `planner`, `executor_heavy`, `executor_light`, and `default`. Its `qa` and `roles` examples are commented out. It does not write a complete configuration for all four roles.
+
+## Fields
+
+| Field | Behavior |
+| --- | --- |
+| `config_version` | Schema version; use `1`. |
+| `roles` | Assign `orchestrator`, `executor`, `reviewer`, and `auxiliary` using `{ agent, model, effort?, provider? }`. Agent and model are required nonempty strings. |
+| `roles.*.agent` | `claude`, `codex`, `opencode`, `api`, or an ID declared in global `clis`. The role loader does not accept `local`. |
+| `taskAgentRules` | Routing rules with `match: { output?: [...], skill?: id }`, `agent`, optional `model`, and `cli_effort`. Task agents include `local`, `api`, registered task CLIs, and custom CLI IDs. |
+| `agent` | Saved agent preference. Task execution still resolves the Executor role or a task override. |
+| `permissionMode` | `yolo` (default) or `manual`. Manual holds chat-created tasks for approval, including new-file tasks. Existing-file tasks are held in either mode. |
+| `apiMode` | `single-shot` (default) or `agentic` for API execution. |
+| `agentic.maxIterations` | Integer from `1` to `100`; default `15`. Limits tool-use rounds per attempt. |
+| `external.timeoutMs` | Integer from `60000` to `86400000`; default `1200000`. Limits a CLI call's wall-clock time. |
+| `sandbox.derivedFiles` | Exact relative file paths that sandbox setup may discard when dirty. No absolute paths, backslashes, parent traversal, or directory paths. |
+| `clis` | Executable declarations from `~/.orchestos/config.yaml` only. Project declarations are ignored with a warning. |
+
+Invalid role assignments are ignored with a warning. A missing role raises `RoleUnassignedError` when needed. Explicit `null` unassigns a role, including one that could otherwise migrate from legacy settings.
+
+<Warning>
+  The harness has a `requireSpec` gate, but the current YAML loader does not retain `requireSpec`. Setting it in a YAML file alone does not activate that gate.
+</Warning>
+
+## Example
+
+Choose models available in your own CLI or provider catalog. This example uses model IDs present in the shipped scaffold:
 
 ```yaml
 config_version: 1
-
 roles:
-  orchestrator: { agent: claude, model: claude-opus-5-5, effort: medium }
-  executor:     { agent: codex,  model: gpt-6-luna,      effort: medium }
-  reviewer:     { agent: codex,  model: gpt-6-luna,      effort: medium }
-  auxiliary:    { agent: codex,  model: gpt-5.6-luna }
-
-taskAgentRules:
-  - match: { output: ["apps/api/**"] }
-    agent: codex
-    model: gpt-6-luna
-
-requireSpec: false
+  orchestrator: { agent: claude, model: claude-sonnet-4-5 }
+  executor: { agent: codex, model: gpt-6-luna, effort: medium }
+  reviewer: { agent: api, provider: openrouter, model: openai/gpt-4.1 }
+  auxiliary: { agent: api, provider: openrouter, model: deepseek/deepseek-v4-flash }
+permissionMode: manual
 apiMode: single-shot
 agentic:
   maxIterations: 15
 external:
   timeoutMs: 1200000
-adversarialQA: false
-refuterQA: false
+sandbox:
+  derivedFiles: [reports/generated.json]
+taskAgentRules:
+  - match: { output: ["apps/api/**"] }
+    agent: codex
+    model: gpt-6-luna
 ```
 
----
+Edit **Task rules** inside **Settings → Model routing** (`routing-rules`). Output glob matches take precedence over skill matches. The first match in each category wins. Rules are applied when a task is drafted.
 
-## Fields
+## Custom CLIs
 
-<ParamField path="config_version" type="integer" required>
-  Schema version. Always `1`.
-</ParamField>
+Declare custom CLIs only in `~/.orchestos/config.yaml`. Each entry requires `id`, `label`, `command`, and a string array `args`. Optional fields are `modelArgs`, `models`, and `timeoutMs`. The timeout uses the same `60000`–`86400000` range.
 
-<ParamField path="roles" type="object">
-  Assignments for `orchestrator`, `executor`, `reviewer`, and `auxiliary`. Each is `{ agent, model, effort?, provider? }` with `agent` one of `claude`, `codex`, `opencode`, `api`. An invalid entry is ignored with a warning, never silently replaced. See [Model routing](/reference/models).
-</ParamField>
+Use the raw custom ID in `roles.*.agent` and task rules. Use `cli:<id>` as a task's `engine`. A custom CLI task engine requires a worktree. It does not guarantee read isolation or action approvals. Its `args` can contain `{prompt}`; otherwise the prompt goes to stdin. `modelArgs` can contain `{model}`.
 
-<ParamField path="taskAgentRules" type="array">
-  Declarative rules that send matching tasks to a specific agent and model. Each rule has `match` (`output` globs and/or `skill` id), `agent`, and optional `model` and `cli_effort`. Applied when a task is drafted. Editable in **Settings → Task rules**. See [Task rules](/reference/models#task-rules).
-</ParamField>
+Although the role loader accepts custom IDs, helper calls through a role still need a chat adapter. A generic task executor does not add that adapter; assigning it to a helper role can fail.
 
-<ParamField path="requireSpec" type="boolean" default="false">
-  When `true`, every task must have an approved spec in `.orchestos/specs/<task-id>.md` before it can run. See [Specs](/guides/specs).
-</ParamField>
+## Legacy settings
 
-<ParamField path="apiMode" type="string" default="single-shot">
-  Only applies when the executor uses `agent: api`. A CLI agent decides this itself.
+`models.planner`, `models.executor_heavy`, and `models.qa` can migrate to API role assignments for Orchestrator, Executor, and Reviewer when no explicit role is set. `models.executor_light` and `models.default` remain parsed. The loader also translates older `executor_mode` and `executorEngine` values in memory.
 
-  - `single-shot` — one prompt, one parsed response.
-  - `agentic` — a multi-turn tool-use loop, capped by `agentic.maxIterations`.
-</ParamField>
-
-<ParamField path="agentic.maxIterations" type="integer" default="15">
-  Maximum tool-use rounds within one attempt when `apiMode` is `agentic`. This is separate from QA retries, which are fixed at three before a task becomes `failed_permanent`.
-</ParamField>
-
-<ParamField path="external.timeoutMs" type="integer" default="1200000">
-  Wall-clock limit for one CLI agent call, in milliseconds (default 20 minutes). It guarantees the run ends; it is not a cost cap.
-</ParamField>
-
-<ParamField path="adversarialQA" type="boolean" default="false">
-  Opt-in. After the reviewer passes a task, a second adversarial judge checks it before the merge. Doubles the QA calls for every task that passes.
-</ParamField>
-
-<ParamField path="refuterQA" type="boolean" default="false">
-  Opt-in. After the reviewer fails a task, a cheap re-check looks for a false negative before a retry is spent. Adds one QA call to every failure.
-</ParamField>
-
----
-
-## Legacy fields
-
-These are still parsed so older configs keep working:
-
-- **`models.planner / executor_heavy / qa`** — migrated to `orchestrator`, `executor`, and `reviewer` when the role is not set. See [Migrating from the legacy models block](/reference/models#migrating-from-the-legacy-models-block).
-- **`models.executor_light / default`** — parsed, no role equivalent.
-- **`agent`** (top level) — the old project-wide agent preference. `executorEngine` and `executor_mode` values are translated to it (`external` → `claude`). The Executor role now decides the agent.
+See [Configuration](/configuration) for environment variables and machine-wide files.

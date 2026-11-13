@@ -1,104 +1,40 @@
 ---
-title: "Middleware: How OrchestOS Builds the Executor's Context"
+title: "Middleware"
 sidebarTitle: "Middleware"
-description: "The harness stages and the five-step middleware chain that enrich each task before the executor runs — from the spec gate and sandbox through context, skills, and instincts."
+description: "Understand the four middleware steps that build executor context."
 ---
 
-Before the executor runs, OrchestOS builds the context it will receive. Part of that work is done by explicit harness stages, and part by a middleware chain of five steps in a fixed order. You control what enters the context through your task fields, skills, instincts, and a few project files — no ad-hoc prompt engineering.
-
-## The order
+The harness prepares each task in this order:
 
 ```text
-spec gate → sandbox setup → executor resolution
-  → memory-fetch → skill-route → roadmap-context → context-inject → instinct-apply
-  → constitution load → prompt build
+spec gate → sandbox → classification and routing
+  → skillRoute → roadmapContext → contextInject → instinctApply
+  → prompt
 ```
-
-Each middleware adds to a shared run context and calls the next one. The execution phase — executor call, contract check, checks, QA, revert, and evidence — runs after the prompt is built.
 
 ## Harness stages
 
-<Steps>
-  <Step title="Spec gate">
-    If `requireSpec: true` is set in `orchestos.config.yaml`, the run stops unless the task's spec is approved. With the default (`false`) this is a no-op.
+The spec gate checks for an approved spec when the supplied harness configuration enables `requireSpec`. See [Specs](/guides/specs).
 
-    ```bash
-    orchestos spec draft   add-button
-    orchestos spec lint    add-button
-    orchestos spec approve add-button
-    ```
-  </Step>
+Sandbox setup selects a worktree or the current directory. Classification uses `task_class` when present and otherwise classifies the description. Routing resolves the executor and reviewer. See [Sandbox](/concepts/sandbox) and [Model routing](/reference/models).
 
-  <Step title="Sandbox setup">
-    Creates a git worktree for the task and points every later file operation at it. See [Sandbox](/concepts/sandbox).
-  </Step>
+## The four middleware steps
 
-  <Step title="Executor resolution">
-    Picks the agent and model that will run the task: the task's own `engine` / `executor_model` if set, otherwise the Executor role. The reviewer comes from the Reviewer role. See [Model routing](/reference/models).
-  </Step>
-</Steps>
+| Step | What it adds |
+| --- | --- |
+| `skillRoute` | The primary skill and applicable automatic phase skills. Review-only skills stay in the QA path. |
+| `roadmapContext` | Applicable engineering guides and the project profile. Missing required toolchains can block a task. |
+| `contextInject` | `CONTEXT.md` when it exists, overriding the supplied project context. Otherwise it keeps that context. |
+| `instinctApply` | Actions from verified instincts with confidence at least `0.8`, scoped to the registered project. |
 
-## The middleware chain
+After the chain, the harness builds the executor prompt from context, skills, roadmap guides, instinct actions, task instructions, explicit input files, and the output contract. Omitted `input` stays `[]`.
 
-<Steps>
-  <Step title="memory-fetch">
-    If the task has no `input[]`, queries the code graph (keyword score, plus semantic embeddings when available) and fills `input[]` with the best matches. It records how many came from embeddings (`embed_hits`). An explicit `input[]` skips this step.
-
-    ```bash
-    orchestos context suggest "fix auth login flow"   # preview suggestions
-    ```
-  </Step>
-
-  <Step title="skill-route">
-    Loads the skill named in the task's `skill` field and renders its guidelines — the same renderer used to compile skills for Claude Code, Cursor, and OpenAI.
-
-    ```bash
-    orchestos skill list
-    ```
-  </Step>
-
-  <Step title="roadmap-context">
-    Adds the engineering guides that apply to the task's output files (baseline, disciplines, and language guides) and the detected project profile. It blocks the task when the output needs a toolchain that is missing — for example, `.rs` files without `cargo` or `.go` files without `go` — because the mandatory checks could not run.
-  </Step>
-
-  <Step title="context-inject">
-    Chooses the project context block: `CONTEXT.md` (compressed, ~500 tokens) when it exists, otherwise `AGENTS.md`. The source and its estimated size are recorded in the run.
-
-    ```bash
-    orchestos context compress ./my-project   # generates CONTEXT.md
-    ```
-  </Step>
-
-  <Step title="instinct-apply">
-    Adds instincts with `confidence >= 0.8` and `verified: true` from the project's instinct store.
-
-    ```bash
-    orchestos instinct add "WHEN task uses Stripe THEN import from src/billing/stripe.ts" "add context"
-    orchestos instinct review
-    ```
-  </Step>
-</Steps>
-
-## After the chain
-
-- **Constitution load** — reads `CONSTITUTION.md` from the project root, if present, and builds the `ALLOWED` / `FORBIDDEN` / `REQUIRE_CONFIRMATION` block.
-- **Prompt build** — assembles the final prompt from the project context, constitution, skill guidelines, roadmap guides, instincts, input files, task description, and output contract.
-
-## What this means for you
-
-| What you want to control | How to do it |
-|---|---|
-| Which files the executor reads | `input[]`, or let the graph suggest |
-| Which files the executor may write | `output[]` |
-| Which agent and model run the task | The Executor role, a task rule, or `engine` / `executor_model` on the task |
-| Domain coding standards | A skill, via the task's `skill` field |
-| Project-wide rules | `CONSTITUTION.md` |
-| Learned conventions | Instincts |
-| Require spec approval | `requireSpec: true` |
-| Smaller project context | `orchestos context compress` |
-
-Preview the result without calling any model:
+## Control task context
 
 ```bash
-orchestos task run ./my-project --explain <task-id>
+orchestos context compress ./my-project
+orchestos instinct add --trigger "Billing convention" --action "Use src/billing/stripe.ts for Stripe calls"
+orchestos task run ./my-project --explain add-health
 ```
+
+`--explain` prints the model, executor, declared inputs, checks, criteria, and task metadata. It does not render this full middleware context.

@@ -1,53 +1,33 @@
 ---
-title: "OrchestOS: Contract-First Orchestration for Your Coding CLIs"
-sidebarTitle: "Home"
-description: "A local dashboard and CLI that turn chat requests into contract-bound tasks, run them with the coding CLIs you already use, and verify them before anything merges."
+title: "OrchestOS"
+sidebarTitle: "OrchestOS"
+description: "Create coding tasks in a local dashboard and inspect their execution evidence."
 ---
 
-OrchestOS is a local dashboard and CLI that orchestrates the coding CLIs you already use — Claude Code, Codex, OpenCode. You ask in a chat; the orchestrator turns the request into a task with a declared file contract, an executor writes only those files inside a git worktree, deterministic checks and a QA reviewer validate the result, and the outcome comes back to the same chat thread. Every run leaves evidence in SQLite.
+OrchestOS turns chat requests into coding tasks with declared output files. You choose agents and models, run work in a git worktree when available, and inspect checks, review results, and file evidence in the same dashboard.
 
 <CardGroup cols={2}>
   <Card title="Quickstart" icon="bolt" href="/quickstart">
-    Install, open the dashboard, and run your first task from the chat.
+    Install OrchestOS and run your first task.
   </Card>
   <Card title="Dashboard" icon="table-columns" href="/guides/dashboard">
-    Chat and Dev modes, task cards, and Settings.
+    Use the Dev workspace, task cards, approvals, and Settings.
   </Card>
   <Card title="Model routing" icon="route" href="/reference/models">
-    The four roles: orchestrator, executor, reviewer, auxiliary.
+    Assign agents and models to the four roles.
   </Card>
   <Card title="CLI reference" icon="terminal" href="/reference/cli">
-    Every command, for scripting and debugging.
+    Inspect tasks and run evidence from your terminal.
   </Card>
 </CardGroup>
 
-## Get up and running
+## Start working
 
-<Steps>
-  <Step title="Install OrchestOS">
-    Install Bun, clone the repository, then run `bun install` and `bun run build:app`.
-  </Step>
-  <Step title="Open the dashboard">
-    Run `orchestos dashboard` and open `http://localhost:4242`. Add a local git repository from the sidebar.
-  </Step>
-  <Step title="Assign the four roles">
-    In **Settings → Model routing**, pick agent, model, and effort for each role. You need no API key if every role uses a CLI you are already logged into.
-  </Step>
-  <Step title="Ask for a change">
-    Switch to **Dev** mode and describe what you want. The orchestrator drafts a task with its `output[]` contract and runs it.
-  </Step>
-</Steps>
+1. Clone the repository and run `bash install.sh`. On Windows, use `install.ps1` or `install.bat`: **Experimental — not yet tested on Windows**.
+2. Open the URL printed by the CLI, including `#t=<token>` on your first visit.
+3. Add a project and assign roles in **Settings → Model routing**.
+4. Switch to **Dev**, describe a change, and review its task card.
 
-## What makes OrchestOS different
+Worktree execution requires a clean git tree. A task touching existing files waits for **Approve & Run**; a dirty tree offers **Commit & Run**. Interrupted tasks offer **Resume**.
 
-<CardGroup cols={3}>
-  <Card title="File contracts" icon="file-contract" href="/concepts/contracts">
-    Each task declares `output[]` — the only files the executor may write. Anything outside that list is blocked, logged, and fails the run.
-  </Card>
-  <Card title="Git worktree sandbox" icon="code-branch" href="/concepts/sandbox">
-    Each task runs in an isolated git worktree. It merges back only after checks and QA pass; on failure the worktree is discarded.
-  </Card>
-  <Card title="Your CLIs, your plan" icon="plug" href="/reference/models">
-    Roles run on `claude`, `codex`, or `opencode` with your own subscription. API keys are optional.
-  </Card>
-</CardGroup>
+Checks run before LLM review. The reviewer runs when acceptance criteria, an applicable review gate, or your noncoding profile requires it. Otherwise the run records that QA was skipped. See [Introduction](/introduction) for contracts, sandbox fallbacks, and evidence.

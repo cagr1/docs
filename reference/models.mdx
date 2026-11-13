@@ -1,107 +1,71 @@
 ---
-title: "OrchestOS Model Routing — The Four Roles"
-sidebarTitle: "Model Routing"
-description: "How OrchestOS decides which agent and model handle each call: the orchestrator, executor, reviewer, and auxiliary roles, per-task overrides, task rules, and legacy config migration."
+title: "Model routing"
+sidebarTitle: "Model routing"
+description: "Choose agents and models for roles and task-specific execution."
 ---
 
-OrchestOS routes every model call through one of four roles. Each role is an assignment of `{ agent, model, effort }` that you choose. OrchestOS never picks a model for you: a role uses exactly what is configured, and an unassigned role stops with an error asking you to assign it.
+Open **Settings → Model routing** to assign Orchestrator, Executor, Reviewer, and Auxiliary. Each assignment contains an agent and model, with optional effort and API provider.
 
-## The four roles
+| Role | Responsibility |
+| --- | --- |
+| Orchestrator | Chat and task drafts. |
+| Executor | Writes task output. |
+| Reviewer | Reviews criteria and applied review gates. |
+| Auxiliary | Diagnosis, analysis, and memory judging. |
 
-| Role | Used for |
-|------|----------|
-| `orchestrator` | The chat, and drafting tasks from your requests |
-| `executor` | Running a task — writing the files in `output[]` |
-| `reviewer` | The QA verdict on each acceptance criterion |
-| `auxiliary` | Read-only helper calls: failure diagnosis, the memory judge, and the skill helpers in Settings |
+A role has no built-in model assignment. When a call needs an unassigned role, it fails with a message such as `Executor role is unassigned — assign it in Settings → Model routing`.
 
-```yaml
-# orchestos.config.yaml
-config_version: 1
-roles:
-  orchestrator: { agent: claude, model: claude-opus-5-5, effort: medium }
-  executor:     { agent: codex,  model: gpt-6-luna,      effort: medium }
-  reviewer:     { agent: codex,  model: gpt-6-luna,      effort: medium }
-  auxiliary:    { agent: codex,  model: gpt-5.6-luna }
-```
+## Agents and engines
 
-Edit roles in **Settings → Model routing**, or by hand in the file.
+Task routing accepts `local`, `api`, the registered task CLIs, and custom CLI IDs. Role configuration accepts `claude`, `codex`, `opencode`, `api`, and globally configured custom IDs. The current role loader rejects `local`.
 
-## Role fields
+| Task engine | Execution |
+| --- | --- |
+| `single-shot` | One API response parsed into file output. |
+| `agentic` | API tool-use loop. |
+| `external` | Claude Code CLI. |
+| `codex` | Codex CLI. |
+| `opencode` | OpenCode CLI. |
+| `cli:<id>` | A custom CLI declared in global `clis`. |
 
-<ParamField path="agent" type="string" required>
-  Who runs the call:
+The CLI registry also detects `deepseek`, `gemini`, `kimi`, and `glm` binaries. Detection does not mean they have a built-in task executor or chat adapter. The shipped task engines cover Claude Code, Codex, OpenCode, and globally configured custom CLIs.
 
-  - `claude` — the Claude Code CLI
-  - `codex` — the Codex CLI
-  - `opencode` — the OpenCode CLI
-  - `api` — a direct API call through a provider (needs an API key)
+Custom CLI IDs are used directly in `roles.*.agent`; the `cli:` prefix belongs to task engines. Generic CLI execution requires a worktree and does not provide verified read isolation or action approvals. A custom task engine does not add the chat adapter needed for helper role calls; those calls can fail.
 
-  CLI agents use the plan you are already logged into. Only `api` costs money per call.
-</ParamField>
+## Task overrides
 
-<ParamField path="model" type="string" required>
-  The model ID passed to the agent. For CLI agents this is the CLI's own model name. For `api`, it is the provider's model ID (for example `anthropic/claude-haiku-4-5` on OpenRouter).
-</ParamField>
+Use `engine`, `executor_model`, and `cli_effort` in `tasks.yaml` to choose task execution. `task run --engine` and `--model` override one invocation without persisting those values in the task file.
 
-<ParamField path="effort" type="string">
-  Reasoning effort passed to the CLI as-is. Its meaning belongs to the CLI that interprets it; OrchestOS does not validate levels per engine.
-</ParamField>
+If you select a different CLI from the configured Executor, supply its model. OrchestOS does not silently choose one for that CLI.
 
-<ParamField path="provider" type="string">
-  Only for `agent: api`. Defaults to `openrouter`. Other values: `anthropic`, `openai`.
-</ParamField>
-
-## How a task picks its executor
-
-For each task run, OrchestOS resolves the executor in this order:
-
-1. **The task's own engine and model** — if the task sets `engine` (`external` for Claude, `codex`, or `opencode`) and `executor_model`, that wins. If it sets `engine` without `executor_model`, it reuses the Executor role's model only when the Executor uses that same CLI; otherwise the run fails with an error naming the mismatch.
-2. **The task's own API model** — if the task sets `executor_model` without a CLI engine, it runs as an `api` call through the task's `executor` provider.
-3. **The Executor role** — otherwise, the task uses `roles.executor`.
-
-The reviewer always comes from `roles.reviewer`.
-
-```yaml
-# tasks.yaml — pin one task to a specific CLI and model
-- id: design-api-interface
-  engine: external                 # Claude Code
-  executor_model: claude-opus-5-5
-  description: "Design the auth service API with token refresh and revocation"
-  output: [docs/api-auth.md]
-```
-
-<Note>
-  Tasks still record a `task_class` (`plan`, `implement`, `fix`, `review`, `doc`) for observability, but the class no longer selects a model. Earlier versions routed by keyword to `planner` / `executor_heavy` / `executor_light`; that routing was replaced by the roles.
-</Note>
+`task_class` selects automatic phase skills. It accepts `plan`, `implement`, `fix`, `review`, or `doc`. Without it, the harness classifies the task description.
 
 ## Task rules
 
-When you work across several CLIs, you can send specific tasks to a specific agent with declarative rules. They are applied when a task is drafted and written into the task's `engine`, `executor_model`, and `cli_effort` fields. Edit them in **Settings → Task rules** or in the config file:
+**Task rules** is a row within **Settings → Model routing**, anchored as `routing-rules`.
 
 ```yaml
 taskAgentRules:
-  - match: { output: ["apps/api/**"] }   # glob against the task's output[]
+  - match: { output: ["apps/api/**"] }
     agent: codex
     model: gpt-6-luna
-    cli_effort: high
-  - match: { skill: frontend-design }    # exact skill id
+  - match: { skill: frontend-design }
     agent: claude
-    model: claude-opus-5-5
+    model: claude-sonnet-4-5
 ```
 
-- An `output` match takes priority over a `skill` match.
-- The first matching rule in declaration order wins; rules are not merged.
-- A rule that routes away from the Executor's agent must set `model`.
+An output glob match takes precedence over a skill match. The first matching rule in each category wins. Rules supply fields when the task is drafted. Include `model` when a rule selects a CLI different from the Executor agent.
 
-## Migrating from the legacy `models:` block
+## Review and API calls
 
-Older configs used `models.planner / executor_heavy / executor_light / default / qa`. These keys are still parsed. When a role is not set explicitly, OrchestOS migrates:
+The Reviewer role resolves before task execution. The LLM review call runs only when criteria, an applicable review gate, or the noncoding profile requires it. Otherwise the run records `skipped`.
 
-| Legacy key | Becomes |
-|------------|---------|
-| `models.planner` | `roles.orchestrator` (as `agent: api`) |
-| `models.executor_heavy` | `roles.executor` (as `agent: api`) — skipped if the project's `agent` is a CLI |
-| `models.qa` | `roles.reviewer` (as `agent: api`) |
+Choose different executor and reviewer models when you want an independent assessment. If both resolve to the same agent and model, the harness logs a correlated-errors warning.
 
-`executor_light` and `default` have no role equivalent. An explicit `roles.<name>` always wins; set it to `null` to unassign a role that would otherwise be migrated.
+For `agent: api`, set `provider` to `openrouter`, `anthropic`, or `openai` and configure its key. CLI calls use the CLI's existing sign-in session. Model availability comes from the provider or installed CLI catalog.
+
+## Migrating from the legacy models block
+
+When no explicit role overrides it, `models.planner` can supply Orchestrator, `models.executor_heavy` can supply Executor, and `models.qa` can supply Reviewer as API assignments. Explicit `null` unassigns a role. Auxiliary has no equivalent legacy assignment.
+
+See [Configuration file](/reference/config) for fallback rules and the legacy scaffold written by `config init`.

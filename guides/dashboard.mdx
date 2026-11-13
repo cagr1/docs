@@ -1,72 +1,98 @@
 ---
-title: "Dashboard: Chat, Dev Mode, and Settings"
+title: "Dashboard"
 sidebarTitle: "Dashboard"
-description: "The OrchestOS dashboard is a local web app where you chat with the orchestrator, turn requests into tasks in Dev mode, and inspect tasks, runs, and memory in Settings."
+description: "Use task cards, approvals, the Dev workspace, and project settings."
 ---
 
-The dashboard is the main way to use OrchestOS. You talk to the orchestrator in a chat, approve the tasks it drafts, and watch them run in the same thread. It reads and writes the same SQLite database as the CLI.
-
-## Starting the dashboard
+## Open your session
 
 ```bash
-orchestos dashboard              # http://localhost:4242
-orchestos dashboard --port 3000
+orchestos dashboard
 ```
 
-<Note>
-  The dashboard binds only to `127.0.0.1`, so it is not exposed on your network. Mutating requests are same-origin checked, so no other page on your machine can trigger actions against it.
-</Note>
+Open the URL printed by the command, including `#t=<token>`. The default port is `4242`; use `--port` to change it. On first startup, the default chat agent is the first installed, functional CLI with a chat adapter. If none is available, OrchestOS can use the API when you have an OpenRouter key.
 
-The UI is a React app built with `bun run build:app`. `orchestos dashboard` rebuilds it automatically if the build is missing.
+Add a project from the sidebar. Assign roles in **Settings → Model routing** before running tasks that need them.
 
-## Projects
+## Chat and Dev
 
-Add a project from the sidebar — any local git repository. Each project keeps its own tasks, runs, memory, specs, skills, and instincts.
+Use **Chat** to discuss your project. In **Dev**, describe the change you want. The orchestrator creates a task through `create_task` and shows a card in the conversation. You create dashboard tasks through chat.
 
-## Chat and Dev modes
+The Dev workspace gives you:
 
-A switch at the top of the thread selects the mode:
+- A file explorer and editor for project files.
+- **Diff** views and a **Terminal**.
+- Session tabs so you can move between conversations.
+- File references: type `@` in the composer to find a project file.
+- **Go to file** to open a file by name.
+- Up to five attachments per message.
+- A context ring that shows usage when the provider supplies it. Hover or focus it for token details.
+- CLI quota indicators for functional CLIs with supported quota sources. Missing data stays unavailable.
 
-- **Chat** — a read-only conversation with the orchestrator about the project. It creates no tasks and writes no files.
-- **Dev** — ask for a change. The orchestrator drafts a task with its `output[]` contract and shows a task card in the thread.
+While a response runs, use the stop control or the configured **Stop** shortcut. Messages sent during a turn can queue for that session. **Settings → Chat** lets you choose between queuing a message and stopping before sending it. You can remove a queued message before it is sent.
 
-The thread shows live thinking, collapsible tool calls, and one card per task. You can attach files: images go natively to the CLI; text and PDF are inlined.
+## Approvals
 
-## Task cards
+A task that touches existing files enters `held` and offers **Approve & Run** or **Reject**. With `permissionMode: manual`, new-file tasks also wait. With `yolo`, a task that only creates files can start directly.
 
-Each task card shows what the task will write and offers the next action:
+A dirty working tree blocks worktree execution. **Commit & Run** lets you select changes to commit before starting.
 
-| Button | When it appears |
-|--------|-----------------|
-| **Approve & Run** | The task touches existing files. It waits for your confirmation. Tasks that only create new files run directly. |
-| **Commit & Run** | Your working tree is dirty. You choose which files to commit before the task starts. |
-| **Retry** | After a failed attempt. Earlier attempts stay folded inside the card. |
+The composer has a separate action-approval selector:
 
-The card updates in place: running → done or failed, with the executor's model, the attempt number, and a summary.
+| Mode | Requested behavior |
+| --- | --- |
+| **Supervised** | Ask before edits and commands. |
+| **Auto-edit** | Allow edits and ask before commands. |
+| **Full access** | Run without action prompts. |
+
+Task engines that do not support action approvals execute with full access. During a supported task, an approval request offers **Approve**, **Reject**, and **Always approve in this task**. The last choice applies to that task.
+
+## Task evidence
+
+A failed card shows the classified cause, the failed check and its output, the QA reason, and the executor report when available. The report is labeled as unverified. Earlier attempt reports stay folded in the card.
+
+If execution was interrupted, the card shows **Interrupted** and offers **Resume**. Inspect the recorded state before resuming. Use the undo control on a completed card to revert a merged run.
+
+You can inspect tasks, runs, and memory under **Settings → your project**. The project's **Graph** view currently displays `CONTEXT.md`, the branch, and clean or dirty worktree status.
 
 ## Settings
 
-### Global
+| Group | Sections |
+| --- | --- |
+| **App** | **General**, **Appearance**, **Keybindings**, **Terminal**, **Editor**, **Chat**, **Notifications**. |
+| **Agents** | **Providers**, **Model routing**, **Executor**, **API keys**. |
+| **Observe** | **Health**, **Usage**. |
+| **Protect** | **Danger zone**. |
 
-**General**, **Health**, **API & Models**, **Model routing**, **Executor**, **Usage**, **Danger zone**, and **Language**.
+In **App → General**, choose English or Spanish and set **I write code**. The noncoding profile requires review. **Appearance** offers OrchestOS, Graphite, Carbon, and Light themes, plus interface scale. **Notifications** controls turn-finished alerts, input-needed alerts, and sound.
 
-**Model routing** is where you assign agent, model, and effort to the four roles. See [Model routing](/reference/models).
+Inside a project's settings, **General** controls its display name, icon, base branch, and setup script. Use **Specs** for spec drafting and approval, **Skills** for the library and project activation, and **Tasks**, **Runs**, and **Memory** to inspect execution.
 
-### Per project
+**Task rules** is a row inside **Model routing** (`routing-rules`). It is not a separate settings page.
 
-Under each project's name:
+## Keyboard shortcuts
 
-| Section | What it shows |
-|---------|---------------|
-| **Tasks** | Every task with status, retry count, QA verdict, and its detail |
-| **Runs** | Run evidence: agent and model, tokens, files written or blocked, checks, QA verdict, context warnings |
-| **Graph** | The indexed code graph used for context suggestions |
-| **Memory** | One plain-text entry per finished task (`task/<id>`: files, QA verdict, model), written without an LLM call |
-| **Specs** | Specs with their lint status; approve them here |
-| **Skills** | Skills available to the project |
-| **Instincts** | Learned behaviors; approve or reject auto-proposals |
-| **Plan** | The project plan |
+Defaults use Cmd on macOS and Ctrl elsewhere for the primary modifier. Customize or reset them in **Settings → Keybindings**.
 
-## The dashboard and the CLI
+| Action | Default |
+| --- | --- |
+| Command palette / search settings | Cmd/Ctrl+K |
+| Go to file | Cmd/Ctrl+P |
+| Open settings | Cmd/Ctrl+, |
+| Zoom in / out / reset | Cmd/Ctrl+=, Cmd/Ctrl+-, Cmd/Ctrl+0 |
+| Switch to Chat / Dev | Alt+1 / Alt+2 |
+| New chat | Alt+N |
+| Toggle sidebar | Cmd/Ctrl+B |
+| Toggle right panel | Cmd/Ctrl+Alt+B |
+| New terminal | Ctrl+backtick |
+| Close Dev tab | Alt+W |
+| Next / previous Dev tab | Alt+] / Alt+[ |
+| Stop a running turn | Escape |
 
-Both use `~/.orchestos/db.sqlite` and the project's `tasks.yaml`. A task run from the CLI appears in the dashboard and the other way round. See the [CLI reference](/reference/cli).
+## Local authentication
+
+The server binds to `127.0.0.1`. It accepts **Host** values `localhost:<port>` and `127.0.0.1:<port>`. If an **Origin** header is present, it must match one of those HTTP origins.
+
+API requests require `x-orchestos-token`. The terminal WebSocket can pass the token as `t` in its query string. The browser receives the initial token through the URL fragment printed by the CLI. A missing or wrong API token returns `401` with `dashboard token required`; an invalid Host or Origin returns `403`.
+
+The token is stored in `~/.orchestos/dashboard-token` unless you set `ORCHESTOS_DASHBOARD_TOKEN`. See [Configuration](/configuration).

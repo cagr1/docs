@@ -1,192 +1,83 @@
 ---
-title: "tasks.yaml Field Reference — OrchestOS Task Declarations"
+title: "tasks.yaml reference"
 sidebarTitle: "tasks.yaml"
-description: "Every tasks.yaml field explained — per-task options, checks[], acceptance_criteria[], managed fields, and a complete annotated example."
+description: "Define task inputs, file contracts, checks, routing, and execution state."
 ---
 
-Every OrchestOS project is driven by a `tasks.yaml` file that declares exactly what each task should do, which files it may write, which tasks must complete first, and how success is measured. OrchestOS reads this file before each run, enforces the declared file contract, and writes results back to the same file. You define the contract; OrchestOS does the execution.
-
-## Top-level fields
-
-<ParamField path="version" type="integer" required>
-  Schema version. Always `1`.
-</ParamField>
-
-<ParamField path="project" type="string" required>
-  The name of your project. Displayed in `orchestos task status` and stored in SQLite alongside every run record.
-</ParamField>
-
-<ParamField path="tasks" type="array" required>
-  Ordered list of task objects. OrchestOS picks the next `pending` task whose `depends_on` dependencies are all `done`.
-</ParamField>
-
----
-
-## Per-task fields
-
-Each entry in `tasks[]` supports the following fields.
-
-<ParamField path="id" type="string" required>
-  Unique identifier in kebab-case (e.g. `add-auth-middleware`). Referenced by `depends_on` in other tasks, by `orchestos task run --id`, and in all run records.
-</ParamField>
-
-<ParamField path="description" type="string" required>
-  The task brief sent to the LLM. Write this as a clear, actionable instruction. The more specific you are about the expected output, the more reliable the result. You can append a user clarification to this field with `orchestos task run --clarify <id>`.
-</ParamField>
-
-<ParamField path="engine" type="string">
-  Optional. Pins the task to a CLI agent: `external` (Claude Code), `codex`, or `opencode`. `single-shot` and `agentic` select an API mode. Without `engine`, the task uses the Executor role. Task rules in **Settings → Task rules** fill this field when a task is drafted. See [Model routing](/reference/models#how-a-task-picks-its-executor).
-</ParamField>
-
-<ParamField path="executor_model" type="string">
-  Optional. The model for this task. With a CLI `engine`, it is the CLI's model name. Without `engine`, the task runs as an API call through `executor` with this model.
-</ParamField>
-
-<ParamField path="cli_effort" type="string">
-  Optional. Reasoning effort passed to the CLI for this task, as-is.
-</ParamField>
-
-<ParamField path="executor" type="string" default="openrouter">
-  The API provider used when the task runs as an API call (`executor_model` set, no CLI `engine`): `openrouter`, `anthropic`, `openai`, or `codex`. `codex` here requires `OS_ENABLE_EXEC_CODEX=1`. Ignored when the task uses a CLI agent.
-</ParamField>
-
-<ParamField path="skill" type="string">
-  Optional skill ID to inject as guidelines into the task prompt. Skills define language-specific verifiers, anti-patterns, and instructions. Run `orchestos skill list` to see available skills. Example: `frontend-design`.
-</ParamField>
-
-<ParamField path="input" type="string[]">
-  Array of file paths the LLM may read as context. Paths are relative to the project root. If you omit `input[]`, OrchestOS uses the code graph to suggest the most relevant files based on keyword and semantic similarity against the task `description`. You can preview the graph suggestions with `orchestos task run --explain <id>`.
-</ParamField>
-
-<ParamField path="output" type="string[]" required>
-  The only files the LLM is allowed to write. Any write attempt outside this list is blocked, logged to SQLite as a contract violation, and the task fails immediately — nothing partial is written. Keep this list as narrow as possible for maximum reliability.
-</ParamField>
-
-<ParamField path="depends_on" type="string[]">
-  List of task `id` values that must reach `done` status before this task is eligible to run. OrchestOS enforces topological order automatically. Circular dependencies are detected and rejected at plan parse time.
-</ParamField>
-
-<ParamField path="checks" type="array">
-  Array of deterministic shell commands that run **before** the QA LLM call. If any check fails, OrchestOS reverts the files and retries — no QA tokens are spent. Each check object supports:
-
-  - `cmd` (string, required) — shell command to execute
-  - `expect_exit` (integer, default `0`) — the exit code that means success
-  - `timeout_ms` (integer, default `10000`) — maximum run time in milliseconds
-</ParamField>
-
-<ParamField path="acceptance_criteria" type="string[]">
-  Array of WHEN/THEN strings evaluated one by one by the QA LLM. Write each criterion in event-driven form: `"WHEN <condition> THEN <observable outcome>"`. The QA call passes only when every item passes. Use `orchestos spec lint <id>` to validate format before approving a spec.
-</ParamField>
-
-<ParamField path="status" type="string">
-  Managed by OrchestOS. Do not edit this field manually. Possible values: `pending`, `running`, `done`, `failed`, `failed_permanent`. A task reaches `failed_permanent` after 3 QA failures; `orchestos task diagnose <id>` runs automatically at that point.
-</ParamField>
-
-<ParamField path="retry_count" type="integer">
-  Managed by OrchestOS. Do not edit this field manually. Incremented on every retry. Visible in `orchestos task status` alongside the QA verdict.
-</ParamField>
-
----
-
-## Annotated example
-
-The following example shows a complete task with every field. In practice most tasks only need `id`, `description`, `output`, and `acceptance_criteria`.
+Place `tasks.yaml` at your project root. You must provide a project name and a task array. Each task requires `id`, `description`, and a nonempty `output` array.
 
 ```yaml
 version: 1
 project: my-app
-
 tasks:
-  # ── Task 1: design the interface first ────────────────────────────────────
-  - id: design-auth-api
-    description: >
-      Write an API design document for the authentication service.
-      Cover token issuance, refresh flow, and revocation endpoints.
-    engine: external              # Claude Code
-    executor_model: claude-opus-5-5
-    output:
-      - docs/auth-api-design.md   # Only this file may be written
-    depends_on: []
+  - id: add-health
+    description: Add a health endpoint
+    task_class: implement
+    input: [src/server.ts]
+    output: [src/routes/health.ts]
     acceptance_criteria:
-      - "WHEN the document is read THEN it covers POST /auth/token, POST /auth/refresh, and DELETE /auth/token"
-      - "WHEN the refresh flow is described THEN it includes token expiry and rotation details"
-    status: pending
-    retry_count: 0
-
-  # ── Task 2: implement the endpoints ───────────────────────────────────────
-  - id: implement-auth-routes
-    description: >
-      Implement the authentication routes defined in docs/auth-api-design.md.
-      Use the existing middleware pattern in src/middleware/auth.ts.
-    executor: openrouter          # API call via OpenRouter — needs OPENROUTER_API_KEY
-    executor_model: deepseek/deepseek-v4-flash
-    skill: implement              # Inject coding guidelines into the prompt
-    input:
-      - docs/auth-api-design.md   # Explicit: LLM reads the design doc
-      - src/middleware/auth.ts    # Explicit: LLM reads existing pattern
-    output:
-      - src/routes/auth.ts        # REQUIRED: only this file may be written
-      - src/routes/auth.test.ts
-    depends_on:
-      - design-auth-api           # Must be done first
+      - "WHEN GET /health succeeds THEN the response contains status ok"
     checks:
-      - cmd: "bun run typecheck"
-        expect_exit: 0
-        timeout_ms: 30000
-      - cmd: "bun test src/routes/auth.test.ts"
-        expect_exit: 0
+      - cmd: bun run typecheck
+        cwd: .
         timeout_ms: 60000
-      - cmd: "grep -r 'TODO' src/routes/auth.ts"
-        expect_exit: 1            # grep exits 1 when nothing found = no TODOs
-    acceptance_criteria:
-      - "WHEN POST /auth/token is called with valid credentials THEN it returns a signed JWT"
-      - "WHEN the token is expired THEN POST /auth/refresh returns a new token"
-      - "WHEN DELETE /auth/token is called THEN the token is added to the revocation list"
+        expect_exit: 0
+    depends_on: []
     status: pending
-    retry_count: 0
 ```
 
-<Accordion title="checks[] — fail fast before spending QA tokens">
-  The `checks[]` array is your first line of defence. Deterministic checks run immediately after the LLM writes files, before the QA LLM call. If a check fails, OrchestOS reverts the files and schedules a retry. This prevents wasting QA tokens on output that has obvious compilation or test failures.
+## Task fields
 
-  ```yaml
-  checks:
-    - cmd: "bun run typecheck"          # TypeScript type check — fast
-    - cmd: "bun test src/components"    # Run only the affected tests
-    - cmd: "grep -r 'TODO' src/auth.ts"
-      expect_exit: 1                    # Fail if any TODO remains
-      timeout_ms: 5000
-  ```
+| Field | Values and behavior |
+| --- | --- |
+| `id` | Unique string matching `^[a-z0-9]+(-[a-z0-9]+)*$`. Lowercase letters and digits separated by single hyphens. |
+| `description` | Required, nonempty task description. |
+| `output` | Required, nonempty array of nonempty file paths. Defines the write contract. |
+| `input` | Array of input file paths. Omitted or `null` becomes `[]`. You must list the context files you need. |
+| `skill` | Primary skill ID. See [Skills](/guides/skills). |
+| `executor` | `openrouter` (default), `anthropic`, `openai`, or legacy `codex`. The last requires `OS_ENABLE_EXEC_CODEX=1`. This field names a provider, not a CLI engine. |
+| `executor_model` | Per-task model override. |
+| `planner_model` | Optional string retained in the task schema; it does not start a planning stage. |
+| `engine` | `single-shot`, `agentic`, `external` (Claude Code), `opencode`, `codex`, or `cli:<id>` for a globally configured CLI. Omit it to use configured routing. |
+| `approvalMode` | `supervised`, `auto-edit`, or `full`. If absent, task execution requests `full`. Engines without action-approval support use full access. |
+| `cli_effort` | Nonempty string interpreted by the selected CLI. |
+| `task_class` | `plan`, `implement`, `fix`, `review`, or `doc`. Selects automatic phase skills; if absent, the harness classifies the description. |
+| `acceptance_criteria` | Array of review criteria. |
+| `checks` | Commands as strings or objects; see below. |
+| `depends_on` | Task IDs that must reach `done` first. Defaults to `[]`. |
+| `status` | `pending` (default), `running`, `done`, `failed`, `failed_permanent`, or `blocked`. |
+| `retry_count` | Number of failed attempts; defaults to `0`. |
+| `retry_reason` | Latest failure or waiting reason. |
+| `qa_verdict` | `pass`, `fail`, or `skipped`. |
+| `run_id` | Last stored run ID when recorded by the caller. |
 
-  Tips:
-  - Scope `bun test` to the affected directory rather than the whole project to keep checks fast.
-  - Use `expect_exit: 1` with `grep` to assert the absence of unwanted strings.
-  - Set generous `timeout_ms` for slow integration tests to avoid flaky timeouts.
-</Accordion>
+Task rules live inside **Settings → Model routing**, in the **Task rules** row (`routing-rules`). See [Model routing](/reference/models#task-rules).
 
-<Accordion title="acceptance_criteria[] — WHEN/THEN format">
-  Each acceptance criterion is evaluated independently by the QA LLM. The WHEN/THEN format forces you to describe observable behavior rather than implementation details, which leads to more reliable QA verdicts.
+## Checks
 
-  ```yaml
-  acceptance_criteria:
-    - "WHEN user submits empty form THEN a validation error is shown inline"
-    - "WHEN token expires THEN the user is redirected to /login"
-    - "WHEN the API returns 429 THEN the UI shows a retry-after message"
-  ```
+You can write a check as a command string or as an object:
 
-  Avoid vague criteria like `"WHEN the code is reviewed THEN it looks good"`. QA can only check what it can observe in the written files.
+```yaml
+checks:
+  - bun run lint
+  - cmd: bun test src/health.test.ts
+    cwd: .
+    timeout_ms: 60000
+    expect_exit: 0
+```
 
-  Use `orchestos spec lint <task-id>` to check that all criteria follow the WHEN/THEN format before approving a spec.
-</Accordion>
+`cmd` is required. `cwd` defaults to the sandbox root and must stay within the project. `timeout_ms` defaults to `60000` and accepts positive integers. `expect_exit` defaults to `0` and accepts nonnegative integers.
 
-<Accordion title="status lifecycle">
-  OrchestOS manages the `status` field automatically. The lifecycle is:
+Commands run as an executable and arguments. The parser rejects `&&`, `||`, `;`, backticks, and `$(`. Declare separate checks instead of combining shell commands. Check output retains up to 2000 characters per stream.
 
-  ```
-  pending → running → done
-                    ↘ pending (retry, retry_count + 1)
-                    ↘ failed_permanent  (after 3 QA failures → auto-diagnose)
-  ```
+If you omit explicit checks, the harness can add checks for the output and available toolchain. These include TypeScript, test assertions, JavaScript syntax, Rust, and Go checks. See [Task workflow](/guides/task-workflow).
 
-  Never edit `status` or `retry_count` by hand unless you are resetting a `failed_permanent` task to `pending` for a fresh attempt after fixing the task definition. To reset all tasks to `pending` for testing, use `orchestos reset --yes`.
-</Accordion>
+## Dependencies and state
+
+Parsing rejects duplicate IDs. It does not reject dependency cycles. A dependency that is missing or unfinished prevents execution.
+
+With `task run --id`, an unfinished dependency sets the task to `blocked`. With `--all`, the CLI selects a ready pending task. It stops on a failed or blocked result and exits with an error when no pending task is executable. It caps execution at 20 iterations.
+
+A failed check or QA review normally returns the task to `pending` with `retry_count + 1`. The third failed attempt becomes `failed_permanent`. Other execution failures can set `failed` earlier. A dirty worktree leaves the task `pending` with `retry_reason`, without spending an attempt.
+
+The reviewer runs when you declare acceptance criteria, an applicable review gate requires it, or your profile says you do not write code. Otherwise the run records `qa_verdict: skipped`.

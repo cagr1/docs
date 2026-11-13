@@ -1,108 +1,71 @@
 ---
-title: "Quickstart: Run Your First OrchestOS Task"
+title: "Quickstart"
 sidebarTitle: "Quickstart"
-description: "Go from a fresh install to a QA-verified task: install, open the dashboard, assign the four roles, and ask for a change in Dev mode. A CLI-only path is included."
+description: "Run your first task from the dashboard or CLI and inspect its evidence."
 ---
 
-This guide takes you from a clean machine to a verified, merged change. You install OrchestOS, open the dashboard, assign an agent to each role, and ask for a change in the chat.
-
-<Steps>
-  <Step title="Install Bun and clone the repository">
-    OrchestOS requires Bun ≥ 1.1 and git.
-
-    ```bash
-    # Install Bun (skip if you already have it)
-    curl -fsSL https://bun.sh/install | bash
-
-    git clone https://github.com/cagr1/orchestos
-    cd orchestos
-    bun install
-    bun run build:app   # builds the dashboard UI
-    ```
-
-    <Tip>
-      Add a shell alias so you can call `orchestos` from anywhere:
-
-      ```bash
-      alias orchestos="bun /path/to/orchestos/src/cli.ts"
-      ```
-    </Tip>
-  </Step>
-
-  <Step title="Check prerequisites">
-    `orchestos setup` checks Bun, git, the coding CLIs it can detect (`claude`, `codex`, `opencode`), and your config.
-
-    ```bash
-    orchestos setup
-    ```
-
-    <Note>
-      You need no API key if every role uses a CLI agent: OrchestOS calls the CLIs you are already logged into, with your own plan. Keys are only for roles set to `agent: api` and for embeddings. See [Installation](/installation#api-keys-optional).
-    </Note>
-  </Step>
-
-  <Step title="Open the dashboard and add a project">
-    ```bash
-    orchestos dashboard   # http://localhost:4242 — use --port to change it
-    ```
-
-    Add a project from the sidebar. Any local git repository works.
-  </Step>
-
-  <Step title="Assign the four roles">
-    Open **Settings → Model routing** and pick agent, model, and effort for each role:
-
-    | Role | What it does |
-    |------|-------------|
-    | Orchestrator | Answers in the chat and drafts tasks |
-    | Executor | Writes the files declared in `output[]` |
-    | Reviewer | Gives the QA verdict on each acceptance criterion |
-    | Auxiliary | Read-only helper calls: failure diagnosis, memory judge |
-
-    Nothing is hardcoded: a role with no assignment stops with an error asking you to pick one. See [Model routing](/reference/models).
-  </Step>
-
-  <Step title="Ask for a change">
-    Switch to **Dev** mode and describe what you want. The orchestrator drafts a task with its `output[]` contract and shows a task card in the thread:
-
-    - **Approve & Run** — when the task touches existing files, it waits for your confirmation. New files run directly.
-    - **Commit & Run** — when the working tree is dirty, you choose which files to commit first.
-    - **Retry** — after a failed attempt. Earlier attempts stay folded inside the card.
-
-    The card updates in place: running → done or failed, with the executor's model, attempt, and summary.
-
-    <Tip>
-      Use **Chat** mode to talk about the project without creating tasks. Chat is read-only.
-    </Tip>
-  </Step>
-
-  <Step title="Inspect the evidence">
-    Open **Settings → (your project) → Tasks**, **Runs**, or **Memory** to see the full record of what happened: model, files written, check results, and QA verdict.
-  </Step>
-</Steps>
-
-## What just happened
-
-OrchestOS ran a pipeline for your task:
-
-1. **Draft** — the orchestrator turned your request into a task with `output[]`, checks, and acceptance criteria.
-2. **Enrichment** — the harness loaded the spec gate, set up a git worktree, resolved the executor, and ran the middleware chain (memory, skills, roadmap, context, instincts).
-3. **Execution** — the executor wrote the declared files inside the worktree.
-4. **Contract check** — any write outside `output[]` was blocked and logged.
-5. **Deterministic checks** — `checks[]` ran. The first failure reverted the worktree and retried.
-6. **QA** — the reviewer evaluated each acceptance criterion. A failure reverted the worktree and returned the task to `pending`.
-7. **Merge and evidence** — on full pass, the worktree merged into your branch and the run record was written to SQLite.
-
-## CLI-only path
-
-Everything the dashboard does is also available from the CLI. Tasks live in `tasks.yaml` at the project root:
+## Install and open
 
 ```bash
-orchestos init ./my-project          # detect stack, save to SQLite, index code graph
-orchestos task init ./my-project     # scaffold tasks.yaml — then edit id, description, output[]
-orchestos task run ./my-project      # run the next pending task
-orchestos task status ./my-project   # id | status | retry | qa | cost
-orchestos runs --detail <run-id>     # full evidence for one run
+git clone https://github.com/cagr1/orchestos
+cd orchestos
+bash install.sh
 ```
 
-Use `--explain <task-id>` for a dry run that shows the plan and suggested context without calling any model. See [Task workflow](/guides/task-workflow) and the [tasks.yaml reference](/reference/tasks-yaml).
+The installer checks Bun, installs dependencies, builds the UI, and starts the dashboard. Open the full URL printed in the terminal, including `#t=<token>`. The installer opens a plain browser URL, so your first visit may need that authenticated link.
+
+For Windows, use `install.ps1` or `install.bat`: **Experimental — not yet tested on Windows**. See [Installation](/installation).
+
+## Configure your project
+
+Add a local project from the sidebar. Use a git repository on a branch for worktree isolation and commit your changes before starting a task.
+
+Open **Settings → Model routing** and assign agents and models:
+
+| Role | Purpose |
+| --- | --- |
+| Orchestrator | Chat and task drafts. |
+| Executor | Task output. |
+| Reviewer | Criteria and review gates. |
+| Auxiliary | Diagnosis and memory judging. |
+
+CLI calls use your existing sign-in session. API calls need the provider's key. The initial chat agent comes from the first functional installed CLI with chat support, or the OpenRouter API fallback.
+
+## Ask for a change
+
+Switch to **Dev** and describe what you want. The orchestrator creates a task through `create_task` and shows its file contract in a card.
+
+- Use **Approve & Run** for a held task. Existing-file tasks wait for approval. `permissionMode: manual` also holds new-file tasks.
+- Use **Commit & Run** when a dirty tree prevents worktree execution.
+- Inspect a failed card's cause, check output, QA reason, and executor report.
+- Use **Resume** for an interrupted task after checking its state.
+
+The composer separately controls action approvals through **Supervised**, **Auto-edit**, and **Full access**. See [Dashboard](/guides/dashboard).
+
+## Inspect the result
+
+The harness checks the spec gate when enabled in its supplied config, sets up the sandbox, resolves classification and routing, then runs `skillRoute → roadmapContext → contextInject → instinctApply` before building the prompt.
+
+After execution, it validates the contract and runs deterministic checks. The LLM reviewer runs when acceptance criteria, an applicable review gate, or the noncoding profile requires it. Otherwise QA is recorded as `skipped`. A successful worktree run merges its changes and records evidence.
+
+Open **Settings → your project → Tasks**, **Runs**, or **Memory** to inspect the outcome. A failed check or QA review normally returns the task to `pending` with a higher retry count; the third failed attempt becomes `failed_permanent`.
+
+## CLI path
+
+Use the CLI through an alias or `bun /path/to/orchestos/src/cli.ts`. Initialize a project only when you intend to generate `AGENTS.md` and `context.json`:
+
+```bash
+orchestos init ./my-project
+orchestos task init ./my-project
+```
+
+Edit the starter tasks in `tasks.yaml`. Declare a description, output files, explicit inputs, checks, and criteria. Omitted `input` becomes `[]`.
+
+```bash
+orchestos task run ./my-project --explain add-health
+orchestos task run ./my-project --id add-health
+orchestos task status ./my-project
+orchestos runs --detail <run-id>
+```
+
+`--explain` prints task metadata, model, executor, declared inputs, checks, and criteria without calling an LLM. See [Task workflow](/guides/task-workflow).

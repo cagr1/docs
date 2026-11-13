@@ -1,81 +1,60 @@
 ---
-title: "Introduction to OrchestOS: Safe LLM Coding Delegation"
+title: "Introduction"
 sidebarTitle: "Introduction"
-description: "Learn what OrchestOS is, the problem it solves, and the design decisions that make work delegated to coding CLIs safe and verifiable."
+description: "Understand task contracts, local execution, verification, and run evidence."
 ---
 
-OrchestOS orchestrates the coding CLIs you already use — Claude Code, Codex, OpenCode — behind a local dashboard. You describe what you want in a chat. The orchestrator turns the request into a task that declares which files may be written, an executor writes them inside a git worktree, deterministic checks and a QA reviewer validate the result, and only then does anything merge into your branch.
+OrchestOS gives you a local dashboard and CLI for coding tasks. You describe a change in chat. The orchestrator creates a task with declared output files, an executor performs the work, and the harness records checks and review evidence.
 
-## The problem it solves
+## Chat and tasks
 
-Delegating software work to an LLM usually means trusting a black box. You write a prompt, the agent edits files, and you hope it only touched what you asked for. When something breaks, you dig through a diff. There is no contract, no evidence, and no systematic check that the output meets your requirements.
+Use **Chat** to discuss your project. Use **Dev** to request changes through the chat's `create_task` tool. A task card shows the contract, execution state, and result.
 
-OrchestOS removes both friction points:
+Tasks that touch existing files wait for **Approve & Run**. With `permissionMode: manual`, new-file tasks also wait. A dirty worktree requires a commit before execution. Interrupted tasks offer **Resume**.
 
-- **The trust barrier** — every run produces an evidence record in SQLite: model, tokens, files attempted vs. authorized, check results, QA verdict, and context warnings.
-- **The technical barrier** — you ask in plain language. OrchestOS drafts the task, picks the agent for each role, sets up the sandbox, and runs QA.
+## Agents and roles
 
-## Key differentiators
+Choose agents and models for Orchestrator, Executor, Reviewer, and Auxiliary in **Settings → Model routing**. Built-in task CLIs are Claude Code, Codex, and OpenCode. You can also configure API calls and custom CLI task engines. Calls through signed-in CLIs do not need API keys.
 
-### Chat first, tasks second
+See [Model routing](/reference/models) for supported agents and the distinction between detecting a CLI and executing a task with it.
 
-The dashboard has two modes. **Chat** is a read-only conversation with the orchestrator about your project. **Dev** turns a request into a task card with its file contract. You approve tasks that touch existing files; new files run directly. The card updates in place as the task runs, fails, or is retried.
+## File contracts
 
-### Your CLIs, your plan
-
-OrchestOS does not ship its own model. Each of the four roles — orchestrator, executor, reviewer, auxiliary — runs on an agent you choose: `claude`, `codex`, `opencode`, or `api`. With CLI agents, calls use the plan you are already logged into, and you need no API key. See [Model routing](/reference/models).
-
-### Contract-first: declared output, hard enforcement
-
-Every task includes an `output[]` list — the exact set of files the executor may write. Any write outside that list is blocked, logged, and fails the run.
+Every task declares a nonempty `output[]` list:
 
 ```yaml
 output:
-  - src/components/Button.tsx
-  - src/components/Button.module.css
+  - src/Button.tsx
+  - src/Button.test.tsx
 ```
 
-### Sandbox via git worktrees
+For API execution, OrchestOS validates returned file blocks before writing them. CLI execution also validates the contract and worktree changes after the agent edits. The output contract is not a general operating-system access boundary. See [File contracts](/concepts/contracts).
 
-Each task runs in its own git worktree. On QA pass, the worktree merges back into your branch. On failure, it is discarded. Your branch is untouched until the output is verified.
+## Worktree isolation
 
-### Deterministic checks before QA
+The default `auto` sandbox uses a git worktree when your project has a clean tree and a usable branch. The executor and checks run there, and successful changes merge into the base branch. Without git or a usable branch, execution can fall back to the current directory. See [Sandbox](/concepts/sandbox).
 
-Shell commands (typecheck, tests, grep assertions) run before the reviewer is called. The first failing check reverts the worktree and retries, so you only spend reviewer calls on output that is structurally sound.
+## Verification
+
+Deterministic checks run before LLM review. You can declare commands and a timeout for each check; the default is `60000` milliseconds.
+
+The reviewer runs when you supply acceptance criteria, an applicable review gate requires it, or your profile says you do not write code. Otherwise the evidence records `qa_verdict: skipped`.
 
 ```yaml
 checks:
-  - cmd: "bun run typecheck"
-  - cmd: "bun test src/components"
-```
-
-### The reviewer validates acceptance criteria
-
-After checks pass, the reviewer role evaluates each `acceptance_criteria` item. If any criterion fails, the worktree is reverted and the task returns to `pending`. After three QA failures the task becomes `failed_permanent`, and a diagnosis agent analyzes the run history to suggest a fix.
-
-```yaml
+  - bun run typecheck
 acceptance_criteria:
-  - "WHEN Button receives disabled=true THEN cursor-not-allowed and opacity-50 are applied"
-  - "WHEN onClick is triggered THEN it is not called while disabled=true"
+  - "WHEN disabled is true THEN clicking does not call onClick"
 ```
 
-### SQLite evidence store
+Failed checks or review normally return a task to `pending` with an incremented retry count. The third failed attempt becomes `failed_permanent`. Other execution failures can set `failed` earlier, and dependencies or missing toolchains can block work.
 
-Every run writes a record to `~/.orchestos/db.sqlite`: agent and model, token counts, `snapshot_before` and `snapshot_after`, files attempted, authorized, and blocked, QA verdict, and context warnings. Every finished task also leaves a plain-text entry in **Memory**. Inspect it in the dashboard or with `orchestos runs --detail <run-id>`.
+## Evidence
 
-## How the pieces fit together
+Runs record model and provider information, file evidence, snapshots, check results, and the QA verdict in `~/.orchestos/db.sqlite`. Task outcomes also leave memory entries. Inspect a task card, **Settings → your project → Runs**, or:
 
-```text
-chat request → task draft (output[]) → middleware chain → executor → contract check → checks[] → reviewer → merge / retry / failed_permanent
+```bash
+orchestos runs --detail <run-id>
 ```
 
-You decide what to build. OrchestOS decides how to verify it was built correctly.
-
-<CardGroup cols={2}>
-  <Card title="Quickstart" icon="bolt" href="/quickstart">
-    Run your first task from the dashboard.
-  </Card>
-  <Card title="Tasks" icon="list-check" href="/concepts/tasks">
-    Every field of a task explained.
-  </Card>
-</CardGroup>
+Start with [Quickstart](/quickstart) to run a task and read its evidence.

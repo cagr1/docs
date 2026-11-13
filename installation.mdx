@@ -1,123 +1,95 @@
 ---
-title: "Installing OrchestOS: Prerequisites and Setup Guide"
+title: "Installation"
 sidebarTitle: "Installation"
-description: "Install OrchestOS with Bun ≥ 1.1, build the dashboard, connect the coding CLIs you already use, and add API keys only if a role needs them."
+description: "Install OrchestOS, start the dashboard, and check local prerequisites."
 ---
 
-OrchestOS runs on Bun, uses git worktrees as its sandbox, and calls the coding CLIs installed on your machine. This page covers prerequisites, the automated installer, manual setup, and optional API keys.
+You need Bun to run OrchestOS and install its dependencies. Use git for the worktree sandbox. You also need a signed-in supported coding CLI or API credentials for the calls you configure.
 
-## Prerequisites
+## Automated installation
 
-- **Bun ≥ 1.1** — runtime and package manager. Install it from [bun.sh](https://bun.sh).
-- **git** — required for the worktree sandbox.
-- **At least one coding CLI**, logged in — `claude` (Claude Code), `codex`, or `opencode`. OrchestOS uses them with your own plan. You can skip this only if every role uses `agent: api`.
+Clone the repository and run its installer:
 
 ```bash
-bun --version
-git --version
-claude --version   # or: codex --version / opencode --version
+git clone https://github.com/cagr1/orchestos
+cd orchestos
+bash install.sh
 ```
+
+On macOS and Linux, `install.sh` checks Bun and attempts to install it if missing. It runs `bun install`, builds the dashboard, creates `~/.orchestos/.env` if absent, and starts the dashboard. It also tries to open `http://localhost:4242` in your browser.
 
 <Note>
-  Bun is required; Node.js and Deno are not supported as runtimes. Bun and Node.js can coexist.
+  On your first visit, use the full URL printed by the CLI, including `#t=<token>`. The installer's browser-opening step uses the plain URL without that token.
 </Note>
 
-## Option 1: Automated installer
+### Windows
 
-The installer checks for Bun (installing it if missing), runs `bun install`, builds the dashboard UI, creates `~/.orchestos/.env`, and starts the dashboard.
+**Experimental — not yet tested on Windows**
 
-<CodeGroup>
-  ```bash macOS / Linux
-  git clone https://github.com/cagr1/orchestos
-  cd orchestos
-  bash install.sh
-  ```
+From the cloned repository, run:
 
-  ```powershell Windows (PowerShell)
-  git clone https://github.com/cagr1/orchestos
-  cd orchestos
-  powershell -ExecutionPolicy Bypass -File install.ps1
-  ```
-</CodeGroup>
-
-The installer creates `~/.orchestos/.env` with an empty `OPENROUTER_API_KEY` line. Leave it empty if every role uses a CLI agent.
-
-## Option 2: Manual install
-
-<Steps>
-  <Step title="Install Bun">
-    ```bash
-    curl -fsSL https://bun.sh/install | bash
-    ```
-  </Step>
-
-  <Step title="Clone, install, and build the dashboard">
-    ```bash
-    git clone https://github.com/cagr1/orchestos
-    cd orchestos
-    bun install
-    bun run build:app
-    ```
-
-    The dashboard is a React app built from `src/dashboard/app/` into `src/dashboard/app/dist/`. That folder is generated and not committed. `orchestos dashboard` rebuilds it automatically if it is missing.
-  </Step>
-
-  <Step title="Add the shell alias (optional)">
-    ```bash
-    # ~/.bashrc or ~/.zshrc
-    alias orchestos="bun /path/to/orchestos/src/cli.ts"
-    ```
-
-    Reload your shell with `source ~/.zshrc` (or `~/.bashrc`).
-  </Step>
-</Steps>
-
-## API keys (optional)
-
-No API key is needed if every role uses a CLI agent. Keys are only used by roles set to `agent: api` (OpenRouter by default) and for embeddings.
-
-```bash
-mkdir -p ~/.orchestos
-cat > ~/.orchestos/.env <<EOF
-OPENROUTER_API_KEY=sk-or-...    # roles with agent: api (default provider)
-ANTHROPIC_API_KEY=sk-ant-...    # roles with agent: api, provider: anthropic
-OPENAI_API_KEY=sk-...           # embeddings (text-embedding-3-small)
-EOF
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-| Key | When it is used |
-|-----|-----------------|
-| `OPENROUTER_API_KEY` | A role with `agent: api` and no `provider`, or `provider: openrouter` |
-| `ANTHROPIC_API_KEY` | A role or task that calls Anthropic directly |
-| `OPENAI_API_KEY` | Semantic re-ranking of context suggestions during `orchestos index` |
+You can also run `install.bat`, which launches `install.ps1`.
 
-<Warning>
-  `~/.orchestos/.env` holds secrets. It lives in your home directory so it stays outside every project repository. Do not commit it.
-</Warning>
+## Manual installation
 
-## Verify the installation
+```bash
+git clone https://github.com/cagr1/orchestos
+cd orchestos
+bun install
+bun run build:app
+bun run src/cli.ts dashboard
+```
+
+Install Bun from [bun.sh](https://bun.sh) first if it is missing. Node.js does not replace Bun as the runtime. Some generated checks, such as JavaScript syntax checks, also use Node.js. Rust and Go outputs require their corresponding toolchains for applicable checks.
+
+To call the CLI from other project directories, add an alias to your shell profile:
+
+```bash
+alias orchestos="bun /path/to/orchestos/src/cli.ts"
+```
+
+Reload your shell profile after adding it. The dashboard command attempts to build the UI if its bundle is missing.
+
+## Connect an agent
+
+Sign in to a supported CLI and ensure its binary is on `PATH`. Built-in task engines support Claude Code, Codex, and OpenCode. Chat capability depends on the available adapter and CLI health. On first startup, the default chat agent is the first functional installed CLI with a chat adapter; an OpenRouter key can provide an API fallback.
+
+In **Settings → Model routing**, assign the four roles required by your workflow. A detected binary alone does not guarantee that it supports every operation. See [Model routing](/reference/models).
+
+## Optional API keys
+
+You need no API key for calls handled by a signed-in CLI. API execution uses its provider's key in `~/.orchestos/.env`:
+
+```bash
+OPENROUTER_API_KEY=
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+```
+
+Use `OPENAI_API_KEY` for the `openai` provider. You can also manage keys in **Settings → API keys**. See [Configuration](/configuration).
+
+## Verify setup
+
+From the installation directory:
 
 ```bash
 orchestos setup
 ```
 
-`setup` reports Bun, git, the detected CLIs, and your config. Then start the dashboard:
+It checks Bun, installed dependencies, `bun.lock` or `bun.lockb`, AI session availability, optional keys, `tasks.yaml`, and `db.sqlite`. It does not check git. If `tasks.yaml` is absent, create it in the project where you want to run tasks:
 
 ```bash
-orchestos dashboard   # http://localhost:4242
+orchestos task init ./my-project
 ```
 
-## Troubleshooting
+Start the dashboard and open the authenticated URL it prints:
 
-**`orchestos: command not found`** — the alias is not set or your shell profile was not reloaded.
+```bash
+orchestos dashboard
+```
 
-**A role fails with "sin asignar" / unassigned** — that role has no agent. Assign it in **Settings → Model routing**.
-
-**A CLI agent is not detected** — make sure the binary is on your `PATH` and that you are logged in (run it once by itself).
-
-**Bun installed but not detected** — open a new terminal; the installer adds `~/.bun/bin` to `PATH` for new sessions.
-
-## Next steps
-
-- [Quickstart](/quickstart) — your first task from the dashboard.
-- [Configuration](/configuration) — roles, `orchestos.config.yaml`, and `CONSTITUTION.md`.
+Continue with [Quickstart](/quickstart), or use [Troubleshooting](/reference/troubleshooting) if setup fails.
